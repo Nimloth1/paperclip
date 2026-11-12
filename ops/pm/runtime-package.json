@@ -1,0 +1,11 @@
+{
+  "name": "paperclip-pm-runtime",
+  "private": true,
+  "dependencies": {
+    "paperclipai": "2026.1106.0"
+  },
+  "allowScripts": {
+    "@embedded-postgres/darwin-arm64@18.1.0-beta.16": true,
+    "@paperclipai/server@2026.1106.0": true
+  }
+}

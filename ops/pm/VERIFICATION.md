@@ -1,0 +1,64 @@
+# Deployment verification — 2026-11-12
+
+## Delivered
+
+- Fork: `https://github.com/Nimloth1/paperclip`, default branch `master`.
+- Checkout: `/Volumes/ssd/projects/t/paperclip`; upstream remote retained.
+- Runtime: official `paperclipai@2026.1106.0` and matching server package.
+- Persistent host LaunchAgent: `com.maeglin.paperclip`.
+- API/UI: `http://127.0.0.1:8822/`, authenticated private mode.
+- Tailscale Serve HTTPS 8822, preserving the existing HTTP 8800 proxy.
+- Existing PM KeepAlive Healthchecks probe includes the service's label and
+  `/api/health`; no additional scheduled job or notification channel created.
+
+## Actual checks
+
+- Fork confirmed against the correct upstream parent; initial checkout was
+  0 ahead / 0 behind origin and had no open PRs.
+- Runtime package versions checked; instance configuration validated against the
+  published configuration schema.
+- Shell syntax and LaunchAgent plist validation passed.
+- Host loopback `/api/health` returned `status=ok`, `authenticated/private`,
+  `bootstrap_pending`.
+- Headless Google Chrome loaded the first-admin page, with no page script errors.
+- Cross-host HTTPS health request from UU passed with certificate validation
+  and the hostname explicitly resolved to PM's real Tailscale IP. The certificate
+  was issued successfully through Tailscale.
+- The host's regular fake-IP DNS path for this name failed; global DNS/proxy
+  settings were left unchanged. Use loopback on PM until that path is resolved.
+- The new host health-probe entry returned healthy. The aggregate probe was
+  triggered through its existing LaunchAgent and reported `status=ok ok=35/35`.
+- The service was restarted through its own LaunchAgent. The PID changed and
+  `/api/health` returned `status=ok` again after startup.
+- The running Paperclip process was checked for ambient provider-key variable
+  names; none of the explicitly cleared provider API variables remained.
+
+## Measured resources
+
+- Installation: 410.1 seconds; sampled aggregate process RSS peak 873.5 MiB.
+- Installed dependencies: approximately 2.7 GiB on external SSD. The task's
+  rebuildable npm download cache was removed after verification, recovering
+  approximately 1,515.9 MiB according to free-space delta.
+- Embedded database after initialization: approximately 87 MiB.
+- Idle observation: 438.7 seconds, covering the scheduler and a PostgreSQL
+  checkpoint cycle, using the host `proc-disk-writes.py` snapshots and diff.
+- Node plus observed PostgreSQL descendants wrote 274,432 bytes (0.2617 MiB)
+  in that window, approximately 0.0503 GiB/day if that idle rate persists.
+- Whole-host writes were larger: external SSD 134.83 MiB, internal Data
+  322.15 MiB, VM 521.19 MiB in that window. Concurrent applications and swap
+  were present; those totals are not attributed to Paperclip. Process counters
+  are not a claim of complete physical-volume attribution.
+
+These are idle-pilot measurements, not a forecast for active agent workloads,
+attachments, or future database growth. No paid model task was started.
+
+## Pending user setup
+
+The user must create/sign in to their own account and claim first-instance
+admin. Then create an organization, enable Assistant connections (MCP), and
+perform client-specific OAuth/stdio setup for Claude Desktop, Codex Desktop,
+and Cursor. None of those desktop configurations has been changed yet.
+
+No upstream application source was changed, so the upstream full test suite and
+source build were not run. This evidence qualifies the pinned packaged runtime
+and host deployment only.
