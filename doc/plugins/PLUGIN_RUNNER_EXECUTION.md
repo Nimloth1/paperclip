@@ -172,6 +172,12 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 
 ## Workspace completion and maintenance
 
+When the selected task driver declares `sessionHandoffVersion: 1`, Core
+reserves the managed workspace before it acquires the run's task lease. Core
+reconciles placement ownership, then passes `taskLease` to the workspace
+preparation call. The plugin uses the same allocation for checkout and Runner
+admission. Finalization uses the active task lease for that run and workspace.
+
 A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
 Before creating a fresh workspace for an admitted Retry, Core may send the
 original task-owned workspace's `prepare` request with `verifyExisting: true`.

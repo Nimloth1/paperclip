@@ -49,7 +49,7 @@ export async function pluginEnvironmentSupportsTasks(db: Db, workers: PluginWork
  * never a plugin identity, resource endpoint, or agent/project authority.
  * A timeout is ambiguous: retry the same operation against the same lease.
  */
-export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManager, input: {
+export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerManager, "getWorker" | "call">, input: {
   companyId: string;
   leaseId: string;
   operation: PluginEnvironmentTaskOperation;

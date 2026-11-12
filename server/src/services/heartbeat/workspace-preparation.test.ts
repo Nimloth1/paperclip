@@ -16,6 +16,8 @@ import { heartbeatService } from "../heartbeat.js";
 import { registerServerAdapter, getServerAdapter, type AdapterExecutionContext } from "../../adapters/index.js";
 import { environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { environmentService } from "../environments.js";
+import { buildEnvironmentLeaseContext } from "../environment-runtime.js";
+import { finalizePluginWorkspace } from "../plugin-workspaces.js";
 import { executionWorkspaceService, toExecutionWorkspace } from "../execution-workspaces.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { workspaceOperationService } from "../workspace-operations.js";
@@ -955,17 +957,20 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   });
 
   it.each([
-    { fromDefault: false, mode: "isolated_workspace" as const, fresh: false },
-    { fromDefault: false, mode: "isolated_workspace" as const, fresh: true },
-    { fromDefault: true, mode: "isolated_workspace" as const, fresh: false },
-    { fromDefault: true, mode: "operator_branch" as const, fresh: false },
-  ])("prepares managed storage before acquisition (fromDefault: $fromDefault, mode: $mode, fresh: $fresh) without touching a Core checkout", async ({ fromDefault, mode: defaultMode, fresh }) => {
+    { fromDefault: false, mode: "isolated_workspace" as const, fresh: false, portable: false },
+    { fromDefault: false, mode: "isolated_workspace" as const, fresh: true, portable: false },
+    { fromDefault: true, mode: "isolated_workspace" as const, fresh: false, portable: false },
+    { fromDefault: true, mode: "operator_branch" as const, fresh: false, portable: false },
+    { fromDefault: false, mode: "isolated_workspace" as const, fresh: false, portable: true },
+  ])("prepares managed storage with the selected Launcher (fromDefault: $fromDefault, mode: $mode, fresh: $fresh, portable: $portable)", async ({ fromDefault, mode: defaultMode, fresh, portable }) => {
     const { input, source, issue } = await fixture(true);
-    const pluginKey = `test.managed-storage-${fromDefault}-${defaultMode}-${fresh}`;
+    if (portable) input.agent.adapterType = "paperclip_runner";
+    const pluginKey = `test.managed-storage-${fromDefault}-${defaultMode}-${fresh}-${portable}`;
     const [plugin] = await db.insert(plugins).values({ pluginKey, packageName: "test-storage", version: "1.0.0", apiVersion: 1, status: "ready", categories: ["workspace"],
       manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Test", categories: ["workspace"],
-        workspaceProvider: { freshWorkspaceVersion: 1, modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"], ...(fromDefault ? { defaultForProjects: { mode: defaultMode, strategy: "git_worktree" as const } } : {}) }, capabilities: ["workspaces.manage", "events.subscribe", "environment.drivers.register"],
-        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }],
+        workspaceProvider: { freshWorkspaceVersion: 1, finalizationVersion: 1, modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"], ...(fromDefault ? { defaultForProjects: { mode: defaultMode, strategy: "git_worktree" as const } } : {}) }, capabilities: ["workspaces.manage", "events.subscribe", "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" },
+          ...(portable ? { sessionHandoffVersion: 1 as const } : {}) }],
         resourceLifecycle: ["project"], entrypoints: { worker: "./worker.js" } } }).returning();
     const [environment] = await db.insert(environments).values({ name: `Storage tasks ${pluginKey}`, driver: "plugin", status: "active",
       config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
@@ -986,7 +991,20 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await rm(source, { recursive: true });
     if (fresh) input.task.freshWorkspace = { mode: "fresh_isolated_workspace", retryIntentId: input.run.id, sourceRunId: input.run.id, retainedSourceIds: [] };
     const sequence: string[] = [];
-    input.services.workspaceWorkers = { getWorker: () => ({ supportedMethods: ["workspaceOperation"] }), call: async (_: string, __: string, params: any) => {
+    const providerLeaseId = randomUUID();
+    const taskLease = { environmentId: environment.id, driverKey: "tasks", providerLeaseId };
+    input.services.workspaceWorkers = { getWorker: () => ({ supportedMethods: ["workspaceOperation", "environmentTask"] }), call: async (_: string, method: string, params: any) => {
+      if (method === "environmentTask") {
+        expect(params.taskId).toBe(providerLeaseId);
+        expect(params.operation.kind).toBe("describe");
+        sequence.push("placement");
+        return { kind: "description", taskId: providerLeaseId, runner: { version: "test", digest: `sha256:${"a".repeat(64)}` } };
+      }
+      expect(params.taskLease).toEqual(portable ? taskLease : undefined);
+      if (params.operation.kind === "finalize") {
+        sequence.push("finalize");
+        return { kind: "finalized", headSha: "a".repeat(40), branchName: "test-WSP-1" };
+      }
       sequence.push("prepare");
       return { kind: "prepared", binding: { pluginId: plugin.id, projectId: issue.projectId, executionWorkspaceId: params.executionWorkspaceId,
         projectWorkspaceId: issue.projectWorkspaceId, sourceRevision: params.operation.source.revision, workspaceRef: "provider:checkout" },
@@ -994,20 +1012,36 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     } } as any;
     const acquire = input.services.envOrchestrator.acquireForRun;
     vi.spyOn(input.services.envOrchestrator, "acquireForRun").mockImplementation(async args => {
-      sequence.push("acquire"); expect(args.persistedExecutionWorkspace).toMatchObject({ providerType: "plugin", cwd: null });
-      // Acquisition is a transport stub: this boundary test stops at handoff.
-      return acquire({ ...args, selectedEnvironmentId: args.localEnvironmentId });
+      sequence.push("acquire");
+      if (!portable) {
+        expect(args.persistedExecutionWorkspace).toMatchObject({ providerType: "plugin", cwd: null });
+        return acquire({ ...args, selectedEnvironmentId: args.localEnvironmentId });
+      }
+      expect(args.persistedExecutionWorkspace).toMatchObject({ mode: defaultMode, id: expect.any(String) });
+      const [lease] = await db.insert(environmentLeases).values({
+        companyId: args.companyId, environmentId: environment.id, heartbeatRunId: args.heartbeatRunId, issueId: args.issueId,
+        executionWorkspaceId: args.persistedExecutionWorkspace!.id, provider: `plugin:${pluginKey}:tasks`, providerLeaseId,
+        status: "active", metadata: { driver: "plugin", pluginId: plugin.id, driverKey: "tasks", agentId: args.agentId, runnerTaskLease: true },
+      }).returning();
+      return { environment: input.environment.selectedEnvironmentForConfig!, lease: (await environmentService(db).getLeaseById(lease.id))!,
+        leaseContext: buildEnvironmentLeaseContext(args), executionTransport: null };
     });
     vi.spyOn(input.services.envOrchestrator, "realizeForRun").mockImplementation(async args => {
       expect(args.executionWorkspace.providerBinding?.workspaceRef).toBe("provider:checkout");
+      if (portable) expect(args.lease.providerLeaseId).toBe(providerLeaseId);
       throw new Error("reached execution handoff");
     });
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("reached execution handoff");
-    expect(sequence).toEqual(["prepare", "acquire"]);
+    expect(sequence).toEqual(portable ? ["acquire", "placement", "prepare"] : ["prepare", "acquire"]);
     await expect(access(source)).rejects.toThrow();
     const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
     const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
     expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, mode: defaultMode, strategyType: "git_worktree", branchName: fresh ? null : fromDefault ? "WSP-1-prepare-this-workspace" : "test-WSP-1" });
+    if (portable) {
+      await expect(finalizePluginWorkspace(db, input.services.workspaceWorkers, workspace, { runId: input.run.id, agentId: input.agent.id }))
+        .resolves.toMatchObject({ kind: "finalized" });
+      expect(sequence).toEqual(["acquire", "placement", "prepare", "finalize"]);
+    }
   });
   async function installDefault() {
     const [plugin] = await db.insert(plugins).values({ pluginKey: "test.default-storage", packageName: "test-storage", version: "1.0.0", status: "ready",

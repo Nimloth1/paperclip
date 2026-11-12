@@ -5,6 +5,7 @@ import { retireAbandonedPluginWorkspaceReservation } from "./plugin-workspace-re
 import { randomUUID, createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import {
+  environmentLeases,
   executionWorkspaces,
   heartbeatRuns,
   issues,
@@ -15,6 +16,7 @@ import {
 import {
   readWorkspaceProviderBinding,
   type WorkspaceProviderBinding,
+  type ExecutionWorkspace,
 } from "@paperclipai/shared";
 import {
   parseWorkspaceProviderResult,
@@ -55,6 +57,7 @@ export async function callWorkspaceProvider(
     runId?: string | null;
     agentId?: string | null;
     removalOperationId?: string;
+    taskLease?: PluginWorkspaceParams["taskLease"];
   },
 ) {
   const { workspace } = input;
@@ -105,6 +108,7 @@ export async function callWorkspaceProvider(
     deadline: new Date(Date.now() + (verifyExisting ? 10_000 : operation.kind === "finalize" ? 30_000 : 300_000)).toISOString(),
     runId: input.runId ?? null,
     agentId: input.agentId ?? null,
+    ...(input.taskLease ? { taskLease: input.taskLease } : {}),
     operation,
   };
   let value: unknown;
@@ -167,6 +171,7 @@ export async function preparePluginWorkspace(
     fresh?: PluginFreshWorkspace;
     expectedBindingRevision?: number;
     verifyExisting?: true;
+    acquireTaskLease?: (workspace: Pick<ExecutionWorkspace, "id" | "mode">) => Promise<NonNullable<PluginWorkspaceParams["taskLease"]>>;
   },
 ) {
   const [previous] = input.existingWorkspaceId
@@ -422,6 +427,10 @@ export async function preparePluginWorkspace(
         .where(eq(issues.id, task.id));
       return row!;
     }));
+  const driverKey = input.environment?.driver === "plugin" ? input.environment.config?.driverKey : undefined;
+  const taskLease = selectedProvider.manifestJson.environmentDrivers?.some(driver =>
+    driver.driverKey === driverKey && driver.sessionHandoffVersion === 1)
+    ? await input.acquireTaskLease?.({ id: workspace.id, mode: mode as ExecutionWorkspace["mode"] }) : undefined;
   return withExecutionWorkspaceLifecycleLock(db, workspace.id, async (tx) => {
     const [current] = await tx
       .select()
@@ -438,11 +447,13 @@ export async function preparePluginWorkspace(
     ) {
       throw conflict("Workspace lifecycle changed; reopen before preparing");
     }
+    if (taskLease) await authorize();
     const result = await callWorkspaceProvider(tx as unknown as Db, workers, {
       workspace,
       pluginId,
       runId: input.runId,
       agentId: input.agentId,
+      taskLease,
       operation: {
         kind: "prepare",
         source: sourceInput,
@@ -638,8 +649,28 @@ export async function finalizePluginWorkspace(db: Db, workers: WorkspaceWorkers 
     // Existing providers continue to use their established inspection contract.
     if (selected.manifestJson.workspaceProvider?.finalizationVersion !== 1)
       return inspectBinding(db, workers, current);
+    const portableDrivers = new Set(selected.manifestJson.environmentDrivers?.filter(driver =>
+      driver.sessionHandoffVersion === 1).map(driver => driver.driverKey));
+    let taskLease: PluginWorkspaceParams["taskLease"];
+    if (portableDrivers.size > 0) {
+      const leases = await db.select().from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, current.companyId),
+        eq(environmentLeases.executionWorkspaceId, current.id),
+        eq(environmentLeases.heartbeatRunId, context.runId),
+        eq(environmentLeases.status, "active"),
+      ));
+      const placements = leases.flatMap(lease => {
+        const driverKey = lease.metadata?.driverKey;
+        return lease.metadata?.pluginId === binding.pluginId && lease.metadata?.agentId === context.agentId &&
+          lease.metadata?.runnerTaskLease === true && lease.environmentId && lease.providerLeaseId &&
+          typeof driverKey === "string" && portableDrivers.has(driverKey)
+          ? [{ driverKey, environmentId: lease.environmentId, providerLeaseId: lease.providerLeaseId }] : [];
+      });
+      if (placements.length > 1) throw conflict("Workspace Launcher placement is ambiguous");
+      taskLease = placements[0];
+    }
     const result = await callWorkspaceProvider(db, workers, {
-      workspace: current, ...context, operation: { kind: "finalize", binding },
+      workspace: current, ...context, taskLease, operation: { kind: "finalize", binding },
     });
     if (result.kind !== "finalized") throw conflict("Workspace finalization is incomplete");
     return result;
