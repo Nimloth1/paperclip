@@ -3486,6 +3486,23 @@ function createPluginEnvironmentDriver(
         workerManager.getWorker(plugin.id)?.supportedMethods.includes("environmentResumeLease");
       const lifecyclePolicy = warm ? { mode: "warm", idleTimeoutMs: parsed.config.runnerIdleTimeoutMs ?? 300_000 } : { mode: "per_turn", idleTimeoutMs: null };
       const fingerprint = createHash("sha256").update(JSON.stringify([parsed.config, input.agentId, input.runnerTaskProjectIds ?? [], ...(input.purpose ? [input.purpose, input.loginCommandKey] : [])])).digest("hex");
+      if (driver.sessionHandoffVersion === 1 && input.adapterType === "paperclip_runner" && input.heartbeatRunId && input.purpose !== "login") {
+        // The run lease already records the placement to replay after a lost preparation reply.
+        const active = await db.select().from(environmentLeases).where(and(
+          eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.environmentId, input.environment.id),
+          eq(environmentLeases.heartbeatRunId, input.heartbeatRunId), eq(environmentLeases.status, "active"),
+        )).limit(2);
+        if (active.length > 0) {
+          const lease = active[0]!;
+          if (active.length !== 1 || !lease.providerLeaseId || lease.releasedAt || lease.cleanupStatus ||
+              lease.expiresAt && lease.expiresAt.getTime() <= Date.now() ||
+              lease.issueId !== input.issueId || lease.executionWorkspaceId !== (input.executionWorkspaceId ?? null) ||
+              lease.metadata?.runnerTaskLease !== true || lease.metadata?.runnerTaskRetiring === true ||
+              lease.metadata?.pluginId !== plugin.id || lease.metadata?.driverKey !== parsed.config.driverKey ||
+              lease.metadata?.runnerTaskFingerprint !== fingerprint) throw new Error("Active plugin task placement changed");
+          return toEnvironmentLeaseSnapshot(lease);
+        }
+      }
       const candidates = warm ? await db.select().from(environmentLeases).where(and(
         eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.environmentId, input.environment.id),
         eq(environmentLeases.status, "retained"), eq(environmentLeases.issueId, input.issueId!),

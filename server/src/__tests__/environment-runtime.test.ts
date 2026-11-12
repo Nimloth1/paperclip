@@ -1253,7 +1253,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     );
   });
 
-  it.each([true, false])("hands off a portable lease only when the next run selects its session (%s)", async resumeSession => {
+  it.each(["handoff", "fresh", "legacy resume"] as const)("preserves the portable task placement on a run retry (%s)", async mode => {
+    const resumeSession = mode !== "fresh";
     const pluginId = randomUUID();
     const pluginKey = "paperclip.test-portable-tasks";
     const seeded = await seedEnvironment({ driver: "plugin", config: { pluginKey, driverKey: "tasks", runnerLifecycleMode: "warm" } });
@@ -1266,7 +1267,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     let acquisitions = 0;
     const call = vi.fn(async (_plugin: string, method: string) => {
       if (method === "environmentAcquireLease") return { providerLeaseId: `sandbox-${++acquisitions}`,
-        metadata: { ownershipGeneration: `generation-${acquisitions}` } };
+        metadata: mode === "legacy resume" ? {} : { ownershipGeneration: `generation-${acquisitions}` } };
+      if (method === "environmentResumeLease") return { providerLeaseId: "sandbox-1", metadata: {} };
       if (method === "environmentReleaseLease") return { providerLeaseId: "sandbox-1", state: "stopped" };
       throw new Error(`Unexpected plugin method: ${method}`);
     });
@@ -1279,13 +1281,17 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await db.update(environmentLeases).set({ status: "retained", metadata: {
       ...first.lease.metadata, runnerTaskIdentity: { sessionId },
     } }).where(eq(environmentLeases.id, first.lease.id));
-    const next = await runtime.acquireRunLease({ ...input, heartbeatRunId: nextRunId,
-      runnerTaskResumeSessionId: resumeSession ? sessionId : null });
-    expect(next.lease.providerLeaseId).toBe("sandbox-2");
-    expect(next.lease.metadata?.portableTaskPreviousLeaseId).toBe(resumeSession ? first.lease.id : undefined);
-    expect(call.mock.calls.map(([, method]) => method)).toEqual(resumeSession
-      ? ["environmentAcquireLease", "environmentAcquireLease"]
-      : ["environmentAcquireLease", "environmentReleaseLease", "environmentAcquireLease"]);
+    const nextInput = { ...input, heartbeatRunId: nextRunId, runnerTaskResumeSessionId: resumeSession ? sessionId : null };
+    const next = await runtime.acquireRunLease(nextInput);
+    expect(next.lease.providerLeaseId).toBe(mode === "legacy resume" ? "sandbox-1" : "sandbox-2");
+    expect(next.lease.metadata?.portableTaskPreviousLeaseId).toBe(mode === "handoff" ? first.lease.id : undefined);
+    await expect(runtime.acquireRunLease(nextInput)).resolves.toMatchObject({ lease: { id: next.lease.id, providerLeaseId: next.lease.providerLeaseId } });
+    await expect(runtime.acquireRunLease({ ...nextInput, issueId: null })).rejects.toThrow("Active plugin task placement changed");
+    expect(call.mock.calls.map(([, method]) => method)).toEqual({
+      handoff: ["environmentAcquireLease", "environmentAcquireLease"],
+      fresh: ["environmentAcquireLease", "environmentReleaseLease", "environmentAcquireLease"],
+      "legacy resume": ["environmentAcquireLease", "environmentResumeLease"],
+    }[mode]);
   });
 
   it.each(["same task", "different task", "different agent", "no task"])(
