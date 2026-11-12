@@ -66,10 +66,35 @@ reports `bootstrapStatus=ready`.
   files are mode 600; small rollback backups stay private and ignored.
 - `codex mcp get paperclip --json` confirmed the enabled stdio command and args.
 
-Still pending: administrator CLI consent, confirming or creating the target
-organization, enabling Assistant connections, completing shared MCP OAuth, and
-read-only calls from the three reloaded native clients. Initialization and a
-recognized config are not evidence of authorized task access.
+Administrator CLI consent is complete: `/api/cli-auth/me` confirms instance-admin
+access. The existing organization is `Gondolin`; no duplicate was created.
+Assistant connections (`enablePublicMcp`) were enabled through the authenticated
+settings API. Other experimental settings were preserved.
+
+Cursor now selects an isolated credential home through
+`PAPERCLIP_MCP_CLIENT=cursor`. Both default and Cursor proxy modes pass stdio
+initialization. Claude and Codex have no approved MCP credential. Cursor's
+read-only OAuth device consent is complete. `paperclip_connection` confirms only
+`paperclip:read` and `offline_access` for Gondolin. The official CLI proxy returned
+successful project and task lists, both empty. Credential mode is 600; the default
+shared MCP home still has zero credentials.
+
+The initial full-scope grant was revoked and the old token returned HTTP 401.
+A first read-only helper attempt omitted required protocol metadata during its
+post-consent check, so it did not persist the token. That attempt may leave an
+unused read-only connection entry in Paperclip; it is not used by any desktop.
+The corrected helper uses the official proxy for MCP calls. No upstream app
+source or packaged runtime was patched.
+
+The catalog still advertises 37 tools for read-only connections. A configuration
+call against a nonexistent project was denied for missing `paperclip:configure`
+before any mutation. No project, task, agent or model execution was started.
+
+Cursor's native log confirms the configured stdio process was started, but its
+first catalog lookup preceded authorization and failed. Still pending: refreshing
+the native connection and a real read from a Cursor chat.
+Claude/Codex authorization and native checks remain deferred. Initialization and
+a recognized config are not evidence of authorized task access.
 
 No upstream application source was changed, so the upstream full test suite and
 source build were not run. This evidence qualifies the pinned packaged runtime

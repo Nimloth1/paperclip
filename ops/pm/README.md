@@ -58,16 +58,20 @@ not yet provide recovery backups for research data.
 
 ## Desktop connections
 
-The first administrator has registered and claimed the instance. Create the desired organization and enable
-Settings → Experimental → Assistant connections (MCP). Use Connectors →
-Assistant Connection (MCP) to generate client-specific setup instructions.
+The first administrator has registered and claimed the instance, and approved
+the official instance-admin CLI configuration grant. The selected organization
+is `Gondolin`. Assistant connections (`enablePublicMcp`) are enabled. Use
+Connectors → Assistant Connection (MCP) for client setup and connection revocation.
 
 The three desktop configurations have a `paperclip` stdio entry pointing to
 `/bin/bash /Volumes/ssd/projects/t/paperclip/ops/pm/mcp.sh`. Existing entries and
 preferences were preserved. The wrapper runs the published CLI proxy with
-`PAPERCLIP_HOME` set to this deployment's private state directory, so the three
-clients share one explicitly approved MCP connection. Revoking that shared
-connection affects all three clients.
+`PAPERCLIP_HOME` set to a private credential directory. Cursor has
+`env: { "PAPERCLIP_MCP_CLIENT": "cursor" }` in its entry, selecting
+`.paperclip/clients/cursor/` and keeping its connection separate from the
+default `.paperclip/` used by the other two clients. Claude and Codex currently
+have no approved MCP credentials; authorizing Cursor does not authorize them.
+The administrator CLI credential is separate from all MCP connection grants.
 
 `tailnet-dns.mjs` pins only the Paperclip hostname to this Mac's Tailscale IPv4
 address inside that CLI process, preserving hostname/certificate validation.
@@ -77,17 +81,33 @@ The authenticated MCP resource remains the canonical HTTPS origin plus
 `/mcp/paperclip`. Reading setup instructions or passing MCP initialization does
 not establish an authorized connection.
 
-Authorize the shared proxy after enabling the feature:
+Cursor's first authorization used the official CLI, which requests read, write,
+configuration and offline access together. The user could not find the opt-out
+in the deployed consent page. That broad grant was revoked; its old access token
+was confirmed rejected with HTTP 401. No project/task mutation used that grant.
 
-```sh
-ops/pm/mcp.sh mcp login --device --url https://pm-haofengmac-mini.taile41bfa.ts.net:8822/mcp/paperclip
-```
+The working connection instead used the same server OAuth device endpoints with
+an explicit scope of `paperclip:read offline_access`, client name `Cursor read-only`,
+and the existing Gondolin company ID. The user approved it in the browser. The
+one-time helper is private, ignored state at
+`.paperclip/clients/cursor/read-only-device.mjs`; it stores the official CLI's
+credential format. The official proxy handles subsequent requests and refresh.
+Do not run the default CLI login for a read-only reconnection without reviewing
+its requested scopes. Verify actual scopes with `paperclip_connection`.
 
-Approve the printed device code in a signed-in Paperclip browser. An existing
+An existing
 Mac browser's proxy/DNS path may still need a per-browser resolution override;
 the CLI's pin does not modify browser behavior. The official CLI stores MCP
-credentials privately under `.paperclip/mcp/` and serializes refresh across
-client processes. No model-provider API key is used by this bridge.
+credentials privately under the selected home directory's `mcp/` and serializes
+refresh across client processes. No model-provider API key is used by this bridge.
+A separate Chrome profile under `.paperclip/browser-cursor-consent/` was opened
+with a process-only host resolver rule and no proxy for the official HTTPS
+consent page. Its login session is private state; it must not be committed.
+
+The catalog contains 37 tools, including mutation tools, even for read-only
+connections. Tool visibility is not permission: the server enforces scopes when
+called. A configuration operation against a nonexistent project was confirmed
+denied with `paperclip:configure permission is required`, without modifying data.
 
 Small private backups of the two pre-existing client configuration files live
 under `.paperclip/client-config-backups/` (approximately 64 KiB total), solely for
