@@ -626,14 +626,16 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       const driverKey = environment.config?.driverKey;
       if (environment.id !== selectedEnvironmentForConfig.id || typeof driverKey !== "string" || !lease.providerLeaseId)
         throw new Error("Workspace Launcher placement changed");
-      await executeEnvironmentTask(db, workers, { companyId: agent.companyId, leaseId: lease.id,
+      const description = await executeEnvironmentTask(db, workers, { companyId: agent.companyId, leaseId: lease.id,
         operation: { kind: "describe" }, ownershipSignal: input.signal });
       await controllerLease.assertOwned();
       const ownedLease = await environmentService(db).getLeaseById(lease.id);
-      if (!ownedLease || ownedLease.providerLeaseId !== lease.providerLeaseId || ownedLease.status !== "active")
+      if (description.kind !== "description" || !ownedLease || ownedLease.providerLeaseId !== description.taskId ||
+          ownedLease.status !== "active" || ownedLease.environmentId !== environment.id ||
+          ownedLease.executionWorkspaceId !== workspace.id)
         throw new Error("Workspace Launcher lease is no longer active");
       workspaceAcquisition = { ...acquisition, lease: ownedLease };
-      return { driverKey, environmentId: environment.id, providerLeaseId: lease.providerLeaseId };
+      return { driverKey, environmentId: environment.id, providerLeaseId: description.taskId };
     },
     mode: requestedExecutionWorkspaceMode,
     strategy: resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig),

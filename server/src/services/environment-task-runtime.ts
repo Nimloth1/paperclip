@@ -368,6 +368,7 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
             ...(recoverableCreation ? { creationOperationVersion: 1, providerMetadata: metadata.providerMetadata } : {}) },
         }, async identity => {
           const params = { driverKey: replacementDriverKey, companyId: input.companyId, environmentId: environment!.id,
+            executionWorkspaceId: lease.executionWorkspaceId ?? undefined,
             issueId: lease.issueId, config: driverConfig, runId: identity.runId, creationOperationId: identity.id,
             agentId: run!.agentId, adapterType: "paperclip_runner",
             ...(typeof metadata.runnerTaskRequestedExpiresAt === "string" ? { requestedExpiresAt: metadata.runnerTaskRequestedExpiresAt } : {}) };

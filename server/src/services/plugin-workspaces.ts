@@ -102,7 +102,8 @@ export async function callWorkspaceProvider(
         : createHash("sha256")
             .update(
               JSON.stringify([workspace.id, operationGeneration, operation,
-                ...(operation.kind === "finalize" ? [input.runId, input.agentId] : [])]),
+                ...(operation.kind === "finalize" ? [input.runId, input.agentId] : []),
+                ...(input.taskLease ? [input.taskLease.environmentId, input.taskLease.driverKey, input.taskLease.providerLeaseId] : [])]),
             )
             .digest("hex")),
     generation: operationGeneration,
