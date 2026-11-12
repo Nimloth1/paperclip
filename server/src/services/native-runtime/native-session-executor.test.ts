@@ -9,6 +9,7 @@ import * as stagedAttachmentRecovery from "./native-staged-attachment-recovery.j
 import * as controllerRecovery from "./native-controller-recovery.js";
 import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.js";
 import * as remoteWarmRecoveryRuntime from "./remote-warm-session-recovery.js";
+import * as pluginTaskOwnership from "../plugin-task-ownership.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
 import * as pluginCredentialWriteback from "../plugin-task-credential-writeback.js";
@@ -13865,7 +13866,7 @@ describe("native warm session supervision", () => {
     "decides warm and adopted process reuse from one key: $name",
     async ({ name, firstEnvironment = {}, secondEnvironment = {}, refreshTools, managedGitHub = false, reuse, adoptionReuse = reuse }) => {
       const decisions: Record<string, boolean> = {};
-      for (const path of ["warm", "adoption"] as const) {
+      for (const path of ["warm", "adoption", ...(refreshTools ? ["portable"] as const : [])] as const) {
         githubAccess.create.mockReset().mockImplementation(async () => ({ env: {}, ready: true, duplexRequested: false,
           activate: githubAccess.activate.mockReset().mockImplementation(() => vi.fn()), stop: githubAccess.stop.mockReset().mockResolvedValue(undefined) }));
         const stateBase = await mkdtemp(join(tmpdir(), "paperclip-runnerd-reuse-key-"));
@@ -13883,8 +13884,9 @@ describe("native warm session supervision", () => {
         } as NativeExecutionInputV1;
         const second = { ...first, binding: { ...first.binding, runId: `run-reuse-key-second-${scope}` } } as NativeExecutionInputV1;
         const target = { kind: "remote" as const, transport: "sandbox" as const, environmentId: "environment-reuse-key",
-          remoteCwd: "/home/daytona/paperclip-workspace", runner: { execute: vi.fn() } } as never;
+          remoteCwd: "/home/daytona/paperclip-workspace", runner: { execute: vi.fn() } };
         const firstSession = { close: vi.fn(async () => undefined) };
+        const recoveredSession = { close: vi.fn(async () => undefined) };
         const result = { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" }, turnId: "turn",
           normalizedSessionId: first.session.normalizedSessionId, providerSessionId: "provider-reuse-key", driverKind: "test",
           driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
@@ -13900,16 +13902,25 @@ describe("native warm session supervision", () => {
             return result;
           })
           .mockImplementationOnce(async (options) => {
-            decisions[path] = options.existingSession === firstSession;
+            decisions[path] = options.existingSession === (path === "portable" ? recoveredSession : firstSession);
             return result;
           });
         const inspected = vi.spyOn(remoteWarmRecoveryRuntime, "inspectRemoteWarmSessionRecovery").mockImplementation(async request => {
-          decisions[path] = request.canReuseProcess(first);
+          const reuseProcess = request.canReuseProcess(first);
+          if (path === "portable") {
+            expect(reuseProcess).toBe(false);
+            return { identity: request.identity as Record<string, string>, checkpoint: { identity: first.binding } as never,
+              previousExecution: first, reuseProcess, portableSourceTaskId: "source-task",
+              remote: { providerLeaseId: "target-task", remoteCwd: target.remoteCwd }, revalidate: async () => {} };
+          }
+          decisions[path] = reuseProcess;
           throw new Error("fixture adoption decision recorded");
         });
+        const ownership = path === "portable"
+          ? vi.spyOn(pluginTaskOwnership, "readyPortableTaskSource").mockResolvedValue("source-task") : undefined;
         try {
           await executePaperclipNativeSession({ db: leaseDb(first), execution: first, runnerInstanceId: "runner-reuse-key",
-            useRunnerd: true, managedGitHub, runnerExecutionTarget: target,
+            useRunnerd: true, managedGitHub, runnerExecutionTarget: target as never,
             runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: "managed", ...firstEnvironment } });
           const durableRoot = (await readdir(stateBase, { withFileTypes: true }))
             .filter(entry => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name)).map(entry => join(stateBase, entry.name))[0]!;
@@ -13919,17 +13930,43 @@ describe("native warm session supervision", () => {
           await writeFile(join(durableRoot, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(durableIdentity)));
           await mkdir(join(durableRoot, "runner"), { recursive: true });
           await writeFile(join(durableRoot, "runner", "runner-state.json"), JSON.stringify(durableRunnerState(durableIdentity, "ready")));
-          if (path === "adoption") expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
+          if (path !== "warm") expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
+          if (path === "portable") state.createBackend.mockReturnValueOnce({
+            kind: "test", recoverSession: async () => ({ recovered: true, session: recoveredSession }),
+          } as never);
+          const portableTarget = { ...target, runner: undefined, leaseId: "target-lease",
+            sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "target-task" },
+            runnerTask: vi.fn(async () => ({ kind: "description", taskId: "target-task", warmTaskVersion: 1,
+              launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1,
+              runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } })),
+          };
+          if (path === "portable") await writeFile(join(stateBase, "auth.json"),
+            JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
+          const db = leaseDb(second);
+          const select = db.select.bind(db);
+          db.select = ((fields?: Record<string, unknown>) => {
+            if (fields?.status === heartbeatRuns.status && fields?.runnerProfileJson === heartbeatRuns.runnerProfileJson) {
+              return { from: () => ({ where: () => ({ limit: async () =>
+                [{ status: "succeeded", runnerProfileJson: { nativeExecutionInput: first } }] }) }) };
+            }
+            if (ownership && fields?.metadata === environmentLeases.metadata) {
+              return { from: () => ({ where: async () => [{ metadata: { portableTaskPreviousLeaseId: "source-lease" } }] }) };
+            }
+            return select(fields as never);
+          }) as Db["select"];
           const continuation = executePaperclipNativeSession({
-            db: { ...leaseDb(second), select: () => ({ from: () => ({ where: () => ({ limit: () =>
-              Promise.resolve([{ status: "succeeded", runnerProfileJson: { nativeExecutionInput: first } }]) }) }) }) } as unknown as Db,
-            execution: second, runnerInstanceId: "runner-reuse-key", useRunnerd: true, managedGitHub, refreshTools,
-            runnerExecutionTarget: target, runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: "managed", ...secondEnvironment } });
+            db, execution: second, runnerInstanceId: "runner-reuse-key", useRunnerd: true, managedGitHub, refreshTools,
+            runnerExecutionTarget: (path === "portable" ? portableTarget : target) as never,
+            ...(path === "portable" ? { runnerIngressAuthorized: true, managedAiCredentialHome: stateBase,
+              managedAiCredentialIdentity: "fixture-revision" } : {}),
+            runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: "managed", ...secondEnvironment } });
           if (path === "adoption") await expect(continuation).rejects.toThrow("fixture adoption decision recorded");
           else await continuation;
-          expect(decisions[path]).toBe(path === "adoption" ? adoptionReuse : reuse);
+          expect(decisions[path]).toBe(path === "portable" ? true : path === "adoption" ? adoptionReuse : reuse);
+          if (path === "portable") expect(recoveredSession.close).not.toHaveBeenCalled();
           if (path === "warm") expect(firstSession.close).toHaveBeenCalledTimes(reuse ? 0 : 1);
         } finally {
+          ownership?.mockRestore();
           inspected.mockRestore();
           await closeIdleWarmNativeSessionsForRestart();
           if (previousStateDirectory === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -13939,7 +13976,7 @@ describe("native warm session supervision", () => {
           await rm(stateBase, { recursive: true, force: true });
         }
       }
-      expect(decisions).toEqual({ warm: reuse, adoption: adoptionReuse });
+      expect(decisions).toEqual({ warm: reuse, adoption: adoptionReuse, ...(refreshTools ? { portable: true } : {}) });
     },
   );
 

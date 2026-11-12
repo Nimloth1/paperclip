@@ -38,6 +38,7 @@ import { forbidden, conflict } from "../errors.js";
 
 export type { WorkspaceWorkers } from "./project-workspace-provider.js";
 type Workspace = typeof executionWorkspaces.$inferSelect;
+type TaskPlacement = NonNullable<PluginWorkspaceParams["taskLease"]>;
 
 export async function pluginWorkspaceSupportsMergeAncestry(db: Db, workers: WorkspaceWorkers | undefined, workspace: Workspace) {
   const pluginId = readWorkspaceProviderBinding(workspace.metadata)?.pluginId;
@@ -635,7 +636,8 @@ export async function inspectPluginWorkspace(db: Db, workers: WorkspaceWorkers |
 
 /** Completion does not need the deletion-safety proof supplied by inspect. */
 export async function finalizePluginWorkspace(db: Db, workers: WorkspaceWorkers | undefined,
-  workspace: Workspace, context: { runId: string; agentId: string }) {
+  workspace: Workspace, context: { runId: string; agentId: string;
+    taskLease?: TaskPlacement; recordPlacement?: (placement: TaskPlacement) => Promise<void> }) {
   return withRetainedWorkspace(db, workers, workspace, async (current) => {
     if (current.metadata?.workspaceProviderRemoved === true)
       throw conflict("Workspace was removed before finalization");
@@ -643,12 +645,12 @@ export async function finalizePluginWorkspace(db: Db, workers: WorkspaceWorkers 
     if (!binding) throw conflict("Workspace storage ownership is missing");
     const selected = await requireWorkspaceProviderWorker(db, workers, current.companyId, binding.pluginId);
     // Existing providers continue to use their established inspection contract.
-    if (selected.manifestJson.workspaceProvider?.finalizationVersion !== 1)
+    if (!context.taskLease && selected.manifestJson.workspaceProvider?.finalizationVersion !== 1)
       return inspectBinding(db, workers, current);
     const portableDrivers = new Set(selected.manifestJson.environmentDrivers?.filter(driver =>
       driver.sessionHandoffVersion === 1).map(driver => driver.driverKey));
-    let taskLease: PluginWorkspaceParams["taskLease"];
-    if (portableDrivers.size > 0) {
+    let taskLease = context.taskLease;
+    if (!taskLease && portableDrivers.size > 0) {
       const leases = await db.select().from(environmentLeases).where(and(
         eq(environmentLeases.companyId, current.companyId),
         eq(environmentLeases.executionWorkspaceId, current.id),
@@ -664,9 +666,10 @@ export async function finalizePluginWorkspace(db: Db, workers: WorkspaceWorkers 
       });
       if (placements.length > 1) throw conflict("Workspace Launcher placement is ambiguous");
       taskLease = placements[0];
+      if (taskLease) await context.recordPlacement?.(taskLease);
     }
     const result = await callWorkspaceProvider(db, workers, {
-      workspace: current, ...context, taskLease, operation: { kind: "finalize", binding },
+      workspace: current, runId: context.runId, agentId: context.agentId, taskLease, operation: { kind: "finalize", binding },
     });
     if (result.kind !== "finalized") throw conflict("Workspace finalization is incomplete");
     return result;

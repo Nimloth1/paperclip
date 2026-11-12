@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, nativeRunFinalizations, plugins, projects, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -996,6 +996,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const readyTaskId = replace ? randomUUID() : providerLeaseId;
     let taskLease = { environmentId: environment.id, driverKey: "tasks", providerLeaseId: readyTaskId };
     const prepareRequests: Array<{ operation: Parameters<typeof callWorkspaceProvider>[2]["operation"]; operationId: string }> = [];
+    const finalizationIds: string[] = [];
     let executionWorkspaceId: string | undefined;
     input.services.workspaceWorkers = { getWorker: () => ({ supportedMethods: [
       "workspaceOperation", "environmentTask", ...(portable ? ["workspacePrepare"] : []),
@@ -1022,6 +1023,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       expect(params.taskLease).toEqual(portable ? taskLease : undefined);
       if (params.operation.kind === "finalize") {
         sequence.push("finalize");
+        finalizationIds.push(params.operationId);
         return { kind: "finalized", headSha: "a".repeat(40), branchName: "test-WSP-1" };
       }
       if (portable) {
@@ -1065,9 +1067,20 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
     expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, mode: defaultMode, strategyType: "git_worktree", branchName: fresh ? null : fromDefault ? "WSP-1-prepare-this-workspace" : "test-WSP-1" });
     if (portable) {
-      await expect(finalizePluginWorkspace(db, input.services.workspaceWorkers, workspace, { runId: input.run.id, agentId: input.agent.id }))
+      const finalization = { runId: input.run.id, agentId: input.agent.id };
+      let recordedPlacement: Parameters<typeof finalizePluginWorkspace>[3]["taskLease"];
+      await expect(finalizePluginWorkspace(db, input.services.workspaceWorkers, workspace, { ...finalization,
+        recordPlacement: async placement => { recordedPlacement = placement; },
+      }))
         .resolves.toMatchObject({ kind: "finalized" });
       expect(sequence).toEqual([...portableSequence, "finalize"]);
+      expect(recordedPlacement).toEqual(taskLease);
+      await db.update(environmentLeases).set({ status: "released" }).where(and(
+        eq(environmentLeases.companyId, input.agent.companyId), eq(environmentLeases.heartbeatRunId, input.run.id)));
+      await expect(finalizePluginWorkspace(db, input.services.workspaceWorkers, workspace, {
+        ...finalization, taskLease: recordedPlacement,
+      })).resolves.toMatchObject({ kind: "finalized" });
+      expect(finalizationIds).toEqual([finalizationIds[0], finalizationIds[0]]);
       const request = { workspace, pluginId: plugin.id, operation: prepareRequests[0]!.operation,
         runId: input.run.id, agentId: input.agent.id };
       await callWorkspaceProvider(db, input.services.workspaceWorkers, { ...request, taskLease });

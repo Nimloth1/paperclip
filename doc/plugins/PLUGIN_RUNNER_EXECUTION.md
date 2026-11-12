@@ -176,7 +176,10 @@ When the selected task driver declares `sessionHandoffVersion: 1`, Core
 reserves the managed workspace before it acquires the run's task lease. Core
 reconciles placement ownership, then passes `taskLease` to the workspace
 preparation call. The plugin uses the same allocation for checkout and Runner
-admission. Finalization uses the active task lease for that run and workspace.
+admission. Finalization records that placement before calling the plugin and
+reuses it on retry. A portable restore starts a new Runner on the target.
+Run attachment applies the current tools and runtime configuration to the
+restored provider session.
 
 A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
 Before creating a fresh workspace for an admitted Retry, Core may send the

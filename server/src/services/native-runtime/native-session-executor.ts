@@ -10747,7 +10747,7 @@ async function executePaperclipNativeSessionAttempt(
           nativeSessionConfigDigest(previous, "remote") === nativeSessionConfigDigest(input.execution, "remote"),
         loadCheckpoint: previous => {
           const proof = releasedWarmRunner(readWarmNativeEnvelope(previous));
-          if (proof) {
+          if (proof || portableSourceTaskId) {
             releasedSource = requireReleasedWarmScope(input, proof, identity, portableSourceTaskId);
           }
           return loadWarmNativeCheckpoint(previous, nativeSessionConfigDigest(previous, "remote"), "remote");
@@ -12007,11 +12007,15 @@ async function executePaperclipNativeSessionAttempt(
         signal: executionContext?.signal ?? new AbortController().signal,
       });
       if (!recovered?.recovered || !recovered.session) throw new Error("runner_state_identity_mismatch: remote_warm_session_unproven");
-      if (remoteWarmRecovery.reuseProcess) {
+      const movedSession = remoteWarmRecovery.portableSourceTaskId !== undefined;
+      // A portable resume already starts a new Runner. Its run attachment
+      // prepares the current tools and runtime on the verified target.
+      if (movedSession || remoteWarmRecovery.reuseProcess) {
         existingWarmSession = recovered.session;
-        await emitStartupReuse(input.onEvent, "runner", { state: "reused", reason: "verified_reuse" });
+        await emitStartupReuse(input.onEvent, "runner", movedSession
+          ? { state: "fresh", reason: "replacement" } : { state: "reused", reason: "verified_reuse" });
         await emitStartupReuse(input.onEvent, "provider_session", { state: "reused", reason: "verified_reuse" });
-        trace.setBudgetStart("warm");
+        if (!movedSession) trace.setBudgetStart("warm");
         persistedWarmSession = null;
       } else {
         await recovered.session.close({ reason: "recovered warm session requires current process configuration" });
