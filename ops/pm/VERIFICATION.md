@@ -101,10 +101,17 @@ logs changed from zero tools to `tools=37, status=connected`; the MCP filesystem
 writer published all 37 definitions to the active chat workspaces. No client
 restart, new consent, application patch or additional permission was used.
 
-Still pending: a real native tool call from a Cursor chat, without terminal or
-script substitution. The native connection and tool discovery are now verified.
-Claude/Codex authorization and native checks remain deferred. Initialization and
-a recognized config are not evidence of authorized task access.
+Native-call acceptance is complete. The user reported that a new Cursor chat
+used the native `user-paperclip` tools successfully, without terminal or script
+substitution: `paperclip_connection` identified Nimloth1 and Gondolin with only
+`paperclip:read` and `offline_access`; `paperclip_list_projects` returned an empty
+list; `paperclip_search_tasks` with limit 100 and offset 0 returned an empty list.
+This user-confirmed native read, together with the inspected native discovery
+logs and direct proxy checks above, qualifies the Cursor read-only integration.
+
+Existing projects/tasks have not been imported. Claude/Codex authorization and
+native checks remain deferred. Initialization and a recognized config alone are
+not evidence of authorized task access.
 
 No upstream application source was changed, so the upstream full test suite and
 source build were not run. This evidence qualifies the pinned packaged runtime
