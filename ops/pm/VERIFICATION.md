@@ -190,9 +190,9 @@ database was not exported. Only this conversation is allowlisted.
   response. The attempted read-only acceptance prompt stopped **before typing
   or sending** because the input had an existing draft. The draft was left
   untouched, and the user was asked to send one harmless turn in that existing
-  chat. **Real Cursor-generated progress events remain unqualified until that
-  turn occurs.** Hook discovery, historical bootstrap and fixture tests are not
-  reported as live event acceptance.
+  chat. At this point live events were unqualified; discovery, historical
+  bootstrap and fixture tests were not counted as live acceptance. The user
+  later sent that turn, and the real-event result is recorded below.
 - Cursor's OAuth scope was not expanded. The write bridge reads the existing
   approved administrator CLI credential, so its single-task scope is a local
   code restriction, not a new server-side least-privilege token. No credential
@@ -213,3 +213,37 @@ database was not exported. Only this conversation is allowlisted.
 No upstream application/runtime source, execution adapters, scheduled tasks or
 services were changed. Full source build and upstream application suites were
 not run for this standalone PM integration script.
+
+### Real Desktop turn acceptance — 2026-11-12 21:27 JST
+
+The user sent the requested harmless message in the same existing Cursor
+conversation and reported receiving a reply. Read-only inspection then found:
+
+- The original local transcript has the new user request, the exact assistant
+  reply `CURSOR_PAPERCLIP_SYNC_OK`, and `turn_ended: success`.
+- Cursor's native Hooks output records this script on `beforeSubmitPrompt`,
+  `afterAgentResponse`, and `stop`. All three returned exit code 0; their
+  durations were 353 ms, 160 ms and 240 ms respectively.
+- Paperclip's API has three new comments from those events. Submission was
+  saved at 12:27:02.159 UTC, response at 12:27:05.072 UTC, and stop at
+  12:27:05.315 UTC. The response comment contains the exact acceptance reply.
+  The task now has four comments including the older historical bootstrap.
+  Its final state is In review, with no execution-agent assignee. The local
+  event queue is empty. No manual flush or synthetic event was used to produce
+  these three live comments.
+- A subsequent explicit replay of the same real stop event emitted `{}` and
+  preserved the task timestamp, task status, four-comment count, and local
+  state modification time. This replay verifies deduplication; it is separate
+  from the original automatic Desktop events.
+- The existing execution agent remains paused. No bridge code, OAuth grant,
+  scheduled task, or service configuration changed during this acceptance.
+  New write measurements were not taken retroactively for events that had
+  already happened. The earlier bootstrap resource measurement is not presented
+  as a measurement of this live turn.
+
+This qualifies **one-way, event-driven progress reporting for this allowlisted
+existing Cursor Desktop conversation**. It does not qualify automatic discovery
+of other conversations, Claude/Codex Desktop integration, two-way control,
+mobile approval, or any native Paperclip Desktop-session import feature. PR #1
+remains a draft for this deliberately narrow pilot; it has not been merged or
+expanded to other conversations.

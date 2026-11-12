@@ -194,6 +194,10 @@ and links it to the human-assigned task GON-2. This is a local, one-way progress
 bridge, separate from the read-only Assistant MCP connection. It does not import
 other conversations, register Cursor as an execution agent, or let Paperclip
 drive the existing desktop conversation. Continue working in Cursor normally.
+One actual user-sent Desktop turn has passed acceptance: all three native Hooks
+ran and created the three expected progress comments; the exact reply is visible
+in Paperclip, the task ended In review, and replay changed nothing. This result
+applies only to the selected conversation, not automatic collection of all chats.
 
 The official Cursor user hooks at `~/.cursor/hooks.json` call the script on
 `beforeSubmitPrompt`, `afterAgentResponse`, and `stop`. Cursor watches this file
