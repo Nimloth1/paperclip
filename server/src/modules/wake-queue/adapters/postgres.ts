@@ -1,6 +1,6 @@
 import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
-import { notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
+import { notifyQueuedRunDispatch, notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
@@ -34,6 +34,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
+import { readQueuedInteractionResponse } from "../../../services/queued-interaction-response.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -124,7 +125,8 @@ function toRunSnapshot(row: ReleaseRun): RunSnapshot {
 function carriedRetryAccounting(row: ReleaseRun): Record<string, unknown> | null {
   const accounting = executionRetryAccounting(row);
   return accounting.failureRetries > 0 || accounting.maxTurnContinuations > 0 || (accounting.interruptedPreparations ?? 0) > 0
-    || (accounting.storageWaits ?? 0) > 0 || (accounting.agentDirectoryWaits ?? 0) > 0 ? { ...accounting } : null;
+    || (accounting.storageWaits ?? 0) > 0 || (accounting.agentDirectoryWaits ?? 0) > 0
+    || (accounting.serverRestarts ?? 0) > 0 ? { ...accounting } : null;
 }
 
 export function isRetryableBeforeProviderWorkRunRow(row: ReleaseRun): boolean {
@@ -450,6 +452,18 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       };
     },
 
+    async owedInteractionAnswer({ companyId, issueId, payload }) {
+      const response = await readQueuedInteractionResponse(tx as unknown as Db, companyId, issueId, payload);
+      if (!response || response.toolActionOutcome || !response.comment.authorUserId) return null;
+      const [task] = await tx.select({ completedAt: issues.completedAt }).from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+      const answeredAt = new Date(response.comment.createdAt);
+      if (!task || (task.completedAt && answeredAt.getTime() > task.completedAt.getTime())) return null;
+      // in_progress is refused while blockers are unresolved, and reopening would throw inside this drain.
+      const readiness = await issuesSvc.getDependencyReadiness(issueId, tx);
+      return readiness.unresolvedBlockerIssueIds.length > 0 ? "blocked" : "deliver";
+    },
+
     async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
       const rows = await tx
         .select({ createdByRunId: issueComments.createdByRunId })
@@ -500,8 +514,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return isCompletedOnboardingHandoffWake(tx, input);
     },
 
-    async reopenIssue({ companyId, issueId }) {
-      const updated = await issuesSvc.updateForCompany(issueId, companyId, { status: "todo", executionState: null }, tx);
+    async reopenIssue({ companyId, issueId, status = "todo" }) {
+      const updated = await issuesSvc.updateForCompany(issueId, companyId, { status, executionState: null }, tx);
       return updated ? toIssueSnapshot(updated as unknown as IssueRow) : null;
     },
 
@@ -858,6 +872,7 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
     }
   }
   if (!existing.length) {
+    await notifyQueuedRunDispatch(tx, { companyId: issue.companyId });
     await tx
       .update(nativeRunFinalizations)
       .set({
