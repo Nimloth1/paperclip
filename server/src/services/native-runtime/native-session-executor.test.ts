@@ -21,7 +21,7 @@ import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@open
 import { configuredEnvironment, configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
@@ -13909,7 +13909,9 @@ describe("native warm session supervision", () => {
           const reuseProcess = request.canReuseProcess(first);
           if (path === "portable") {
             expect(reuseProcess).toBe(false);
-            return { identity: request.identity as Record<string, string>, checkpoint: { identity: first.binding } as never,
+            const checkpoint = request.loadCheckpoint(first);
+            expect(checkpoint?.identity.runId).toBe(first.binding.runId);
+            return { identity: request.identity as Record<string, string>, checkpoint: checkpoint!,
               previousExecution: first, reuseProcess, portableSourceTaskId: "source-task",
               remote: { providerLeaseId: "target-task", remoteCwd: target.remoteCwd }, revalidate: async () => {} };
           }
@@ -13917,23 +13919,44 @@ describe("native warm session supervision", () => {
           throw new Error("fixture adoption decision recorded");
         });
         const ownership = path === "portable"
-          ? vi.spyOn(pluginTaskOwnership, "readyPortableTaskSource").mockResolvedValue("source-task") : undefined;
+          ? vi.spyOn(pluginTaskOwnership, "readyPortableTaskSource").mockImplementation(async (_db, _company, _lease, identity, scope) => {
+              expect(scope?.accountIdentity).toBe("fixture-account");
+              return { taskId: "source-task", identity: identity as NonNullable<Awaited<ReturnType<typeof pluginTaskOwnership.readyPortableTaskSource>>>["identity"] };
+            }) : undefined;
+        const projection = path === "portable" ? vi.spyOn(controllerRecovery, "resolveNativeControllerRecovery") : undefined;
         try {
           await executePaperclipNativeSession({ db: leaseDb(first), execution: first, runnerInstanceId: "runner-reuse-key",
             useRunnerd: true, managedGitHub, runnerExecutionTarget: target as never,
+            ...(path === "portable" ? { managedAiAccountIdentity: "fixture-account", managedAiCredentialIdentity: "old-revision" } : {}),
             runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: "managed", ...firstEnvironment } });
           const durableRoot = (await readdir(stateBase, { withFileTypes: true }))
             .filter(entry => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name)).map(entry => join(stateBase, entry.name))[0]!;
           const durableIdentity = { runId: first.binding.runId, normalizedSessionId: first.session.normalizedSessionId,
-            runnerInstanceId: "runner-reuse-key", environmentLeaseId: first.binding.executionWorkspaceId };
+            runnerInstanceId: "runner-reuse-key", environmentLeaseId: first.binding.executionWorkspaceId,
+            turnId: "prior-turn", itemId: "prior-item" };
           await mkdir(join(durableRoot, "control-plane"), { recursive: true });
           await writeFile(join(durableRoot, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(durableIdentity)));
           await mkdir(join(durableRoot, "runner"), { recursive: true });
           await writeFile(join(durableRoot, "runner", "runner-state.json"), JSON.stringify(durableRunnerState(durableIdentity, "ready")));
           if (path !== "warm") expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
-          if (path === "portable") state.createBackend.mockReturnValueOnce({
-            kind: "test", recoverSession: async () => ({ recovered: true, session: recoveredSession }),
-          } as never);
+          if (projection) {
+            const directory = join(resolvePaperclipInstanceRoot(), "runtime/paperclip-runner/sessions");
+            const path = join(directory, (await readdir(directory))[0]!);
+            const { snapshot, configDigest, processConfigDigest } = JSON.parse(await readFile(path, "utf8"));
+            await rm(path);
+            await rm(durableRoot, { recursive: true });
+            projection.mockResolvedValueOnce({
+              kind: "recoverable", snapshot,
+              metadata: controllerRecovery.createNativeControllerRecovery(snapshot, { configDigest, processConfigDigest }, null),
+              checkpoint: { restoreSessionDirectory(root: string) {
+                mkdirSync(join(root, "control-plane"), { recursive: true });
+                writeFileSync(join(root, "control-plane/control-plane-state.json"), JSON.stringify(durableControlPlaneState(durableIdentity)));
+              } } as never,
+            });
+            state.createBackend.mockReturnValueOnce({
+              kind: "test", recoverSession: async () => ({ recovered: true, session: recoveredSession }),
+            } as never);
+          }
           const portableTarget = { ...target, runner: undefined, leaseId: "target-lease",
             sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "target-task" },
             runnerTask: vi.fn(async () => ({ kind: "description", taskId: "target-task", warmTaskVersion: 1,
@@ -13958,7 +13981,7 @@ describe("native warm session supervision", () => {
             db, execution: second, runnerInstanceId: "runner-reuse-key", useRunnerd: true, managedGitHub, refreshTools,
             runnerExecutionTarget: (path === "portable" ? portableTarget : target) as never,
             ...(path === "portable" ? { runnerIngressAuthorized: true, managedAiCredentialHome: stateBase,
-              managedAiCredentialIdentity: "fixture-revision" } : {}),
+              managedAiAccountIdentity: "fixture-account", managedAiCredentialIdentity: "current-revision" } : {}),
             runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: "managed", ...secondEnvironment } });
           if (path === "adoption") await expect(continuation).rejects.toThrow("fixture adoption decision recorded");
           else await continuation;
@@ -13966,6 +13989,7 @@ describe("native warm session supervision", () => {
           if (path === "portable") expect(recoveredSession.close).not.toHaveBeenCalled();
           if (path === "warm") expect(firstSession.close).toHaveBeenCalledTimes(reuse ? 0 : 1);
         } finally {
+          projection?.mockRestore();
           ownership?.mockRestore();
           inspected.mockRestore();
           await closeIdleWarmNativeSessionsForRestart();

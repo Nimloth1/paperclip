@@ -111,7 +111,8 @@ async function ownershipClaim(db: Db, input: {
       return unavailable();
     } else if (ready && target.metadata.portableTaskOwnershipReady !== true) {
       await tx.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({
-        portableTaskOwnershipReady: true, ...(ready.checkpointUnavailable ? { portableTaskCheckpointUnavailable: true } : {}),
+        portableTaskOwnershipReady: true, ...(ready.checkpointUnavailable ? { portableTaskCheckpointUnavailable: true }
+          : { runnerTaskAccountIdentity: source.metadata.runnerTaskAccountIdentity }),
       })}::jsonb` })
         .where(eq(environmentLeases.id, targetLeaseId));
     }
@@ -175,7 +176,7 @@ export async function reconcilePluginTaskAdmission(db: Db, lease: Lease,
 }
 
 export async function readyPortableTaskSource(db: Db, companyId: string, targetLeaseId: string, identity: unknown,
-  attachedRunId?: string) {
+  scope: { attachedRunId?: string; accountIdentity?: string } = {}) {
   const [target] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, companyId),
     eq(environmentLeases.id, targetLeaseId)));
   if (!target?.metadata?.portableTaskPredecessor) return undefined;
@@ -193,7 +194,10 @@ export async function readyPortableTaskSource(db: Db, companyId: string, targetL
   if (!source || source.provider !== target.provider || source.providerLeaseId !== operation.data.sourceTaskId ||
       leaseGeneration(source) !== operation.data.sourceGeneration ||
       nativeSha256(source.metadata?.portableTaskSuccessor ?? null) !== nativeSha256(claim)) return unavailable();
+  if ("accountIdentity" in scope && (!scope.accountIdentity || source.metadata?.runnerTaskAccountIdentity !== scope.accountIdentity))
+    return unavailable();
   const candidate = object(identity);
+  const { attachedRunId } = scope;
   if (attachedRunId && target.heartbeatRunId === attachedRunId && candidate.runId === attachedRunId) {
     const saved = object(target.metadata.runnerTaskIdentity);
     const attachedIdentity = {
@@ -205,5 +209,5 @@ export async function readyPortableTaskSource(db: Db, companyId: string, targetL
     return unavailable();
   }
   if (Object.entries(operation.data.identity).some(([key, value]) => candidate[key] !== value)) return unavailable();
-  return operation.data.sourceTaskId;
+  return { taskId: operation.data.sourceTaskId, identity: operation.data.identity };
 }

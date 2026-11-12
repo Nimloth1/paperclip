@@ -133,7 +133,7 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
     identity.turnId === saved.turnId && identity.itemId === saved.itemId;
   const portableCheckpoint = operation.kind === "read_state" && !resumeFrom && !savedIdentity &&
     metadata.portableTaskPredecessor !== undefined
-    ? await readyPortableTaskSource(db, input.companyId, lease.id, operation.identity) : undefined;
+    ? (await readyPortableTaskSource(db, input.companyId, lease.id, operation.identity))?.taskId : undefined;
   const ownCheckpoint = checkpointIdentity && !resumeFrom &&
     (portableCheckpoint || matches(checkpointIdentity,savedIdentity) || operation.kind !== "read_file" && matches(checkpointIdentity,priorSaved));
   if (checkpointIdentity && !resumeFrom && !ownCheckpoint) throw new Error("Plugin Runner state identity mismatch");
@@ -156,7 +156,7 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
       context: context instanceof NativeExecutionContext ? context : undefined, operation }) : undefined;
   const portableAttachment = prior && !sourceAttachment && metadata.runnerTaskReused !== true &&
     metadata.portableTaskPredecessor !== undefined
-    ? await readyPortableTaskSource(db, input.companyId, lease.id, prior) : undefined;
+    ? (await readyPortableTaskSource(db, input.companyId, lease.id, prior))?.taskId : undefined;
   const warmAttachment = !!prior && (metadata.runnerTaskReused === true || !!sourceAttachment || !!portableAttachment) &&
     (portableAttachment && !savedIdentity || matches(prior, savedIdentity) ||
       matches(prior, priorSaved) && operation.kind === "prepare" && matches(operation.requirements.identity, savedIdentity)) &&
@@ -308,8 +308,17 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
   }
   if (operation.kind === "submit" || operation.kind === "copilot_metadata" || firstPortableResume) {
     // No ticket, headers, environment values, or launch paths belong in metadata.
+    const dispatched = {
+      runnerTaskLease: true, runnerTaskDispatched: true,
+      runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false,
+      ...(operation.kind === "submit" ? {
+        runnerTaskIdentity: operation.runner,
+        runnerTaskResumeFrom: operation.resumeFrom ?? null,
+        runnerTaskAccountIdentity: operation.accountIdentity,
+      } : {}),
+    };
     const marked = await db.update(environmentLeases).set({
-      metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskAdmissionRejection') || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, ...(operation.kind === "submit" ? { runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null } : {}) })}::jsonb`,
+      metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskAdmissionRejection') || ${JSON.stringify(dispatched)}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
       eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
       requiredProjectAuthProof ? sql`${environmentLeases.metadata}->'runnerTaskProjectAuthValidation' = ${JSON.stringify(requiredProjectAuthProof)}::jsonb` : undefined,
@@ -507,7 +516,7 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
     }
     if (portableCheckpoint && operation.kind === "read_state" || portableAttachment && operation.kind === "prepare") {
       const identity = operation.kind === "read_state" ? operation.identity : operation.priorIdentity;
-      const sourceTaskId = await readyPortableTaskSource(db, input.companyId, lease.id, identity);
+      const sourceTaskId = (await readyPortableTaskSource(db, input.companyId, lease.id, identity))?.taskId;
       if (sourceTaskId !== (portableCheckpoint || portableAttachment)) throw new Error("Plugin Runner session ownership changed");
     }
     if (operation.kind === "read_file") {

@@ -130,7 +130,9 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     const f = await fixture();
     await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: f.issueId }).where(eq(heartbeatRuns.id, f.runId));
     await db.update(environmentLeases).set({ status: "retained", releasedAt: null,
-      metadata: sql`(${environmentLeases.metadata} - 'remoteExecutionTermination') || '{"providerMetadata":{"ownershipGeneration":"source-generation"}}'::jsonb`,
+      metadata: sql`(${environmentLeases.metadata} - 'remoteExecutionTermination') || ${JSON.stringify({
+        providerMetadata: { ownershipGeneration: "source-generation" }, runnerTaskAccountIdentity: f.accountIdentity,
+      })}::jsonb`,
     }).where(eq(environmentLeases.id, f.sourceLeaseId));
     await db.update(environmentLeases).set({
       metadata: sql`${environmentLeases.metadata} || '{"providerMetadata":{"ownershipGeneration":"target-generation"}}'::jsonb`,
@@ -175,6 +177,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     expect(f.workers.call.mock.calls.map(([, , call]) => call.operation)).toEqual([...Array(6).fill(operation), { kind: "describe" }]);
     const [target] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
     expect(target.metadata?.portableTaskOwnershipReady).toBe(true);
+    expect(target.metadata?.runnerTaskAccountIdentity).toBe(f.accountIdentity);
     const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.sourceLeaseId));
     expect(source.metadata?.remoteExecutionTermination).toBeUndefined();
     await expect(f.oldWriter(f.checkpoint)).rejects.toThrow("native_runner_checkpoint_owner_lost");
@@ -201,10 +204,14 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     const [attached] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
     expect(attached.metadata?.runnerTaskIdentity).toMatchObject({ runId: f.runId, sessionId: f.identity.normalizedSessionId });
     expect(attached.metadata?.runnerTaskPriorIdentity).toMatchObject({ runId: f.sourceRunId, itemId: f.identity.itemId });
-    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, nextIdentity, f.runId)).resolves.toBeUndefined();
-    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, { ...nextIdentity, turnId: "wrong-turn" }, f.runId))
+    const scope = { attachedRunId: f.runId, accountIdentity: f.accountIdentity };
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, nextIdentity, scope)).resolves.toBeUndefined();
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, { ...nextIdentity, turnId: "wrong-turn" }, scope))
       .rejects.toThrow("ownership_unverified");
-    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, f.identity, f.runId)).resolves.toBe("source-task");
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, f.identity, scope))
+      .resolves.toEqual({ taskId: "source-task", identity: f.identity });
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, f.identity, { ...scope, accountIdentity: "another-account" }))
+      .rejects.toThrow("ownership_unverified");
   });
 
   it.each(["codex", "claude"] as const)("authorizes the claimed %s source while preserving A's accepted outcome", async provider => {

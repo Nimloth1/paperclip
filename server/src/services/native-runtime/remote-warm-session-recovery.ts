@@ -191,7 +191,8 @@ export async function inspectRemoteWarmSessionRecovery(input: {
     remote: { providerLeaseId, remoteCwd: target.remoteCwd },
     revalidate: async leaseOwner => {
       await assertPriorStopped();
-      if (input.portableSourceTaskId && await readyPortableTaskSource(input.db, binding.companyId, target.leaseId!, identity) !== input.portableSourceTaskId) return deny();
+      if (input.portableSourceTaskId &&
+          (await readyPortableTaskSource(input.db, binding.companyId, target.leaseId!, identity))?.taskId !== input.portableSourceTaskId) return deny();
       const controller = await currentNativeControllerIdentity();
       const [current] = await input.db.select({ run: heartbeatRuns, owner: nativeRunFinalizations, issue: issues, agent: agents, company: companies })
         .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
