@@ -187,6 +187,74 @@ and save it in **Backlog**. Creating a task does not itself start an existing
 Cursor Desktop conversation. Autonomous execution requires a separately
 configured, active execution agent and its normal budget/approval controls.
 
+## Existing Cursor Desktop conversation pilot
+
+`cursor-progress.py` observes one existing conversation, **Paperclip 列项目任务**,
+and links it to the human-assigned task GON-2. This is a local, one-way progress
+bridge, separate from the read-only Assistant MCP connection. It does not import
+other conversations, register Cursor as an execution agent, or let Paperclip
+drive the existing desktop conversation. Continue working in Cursor normally.
+
+The official Cursor user hooks at `~/.cursor/hooks.json` call the script on
+`beforeSubmitPrompt`, `afterAgentResponse`, and `stop`. Cursor watches this file
+and reloads it. Every hook checks the private conversation ID before reading
+credentials, state or message content. Other conversations are ignored. No
+thinking hooks, shell/tool hooks, background polling or model API calls are added.
+The already-approved local administrator CLI credential authorizes REST writes;
+it is not copied into the hooks file or given to the model through MCP. This
+credential has administrator authority: the restriction to one task is enforced
+by this script, **not by a separate least-privilege server credential**. Cursor's
+MCP consent remains read-only. This is a single-session pilot, not a hardened
+multi-user connector.
+
+The private binding and small outbox live in `.paperclip/cursor-progress/`.
+Only bounded visible request/reply excerpts are synchronized. Common credential
+patterns are redacted; this is not comprehensive DLP, and sensitive conversations
+must not be added without reviewing what is transmitted. The selected source
+contains only the known Paperclip read-only acceptance conversation. Original
+transcripts and the live Cursor database are never modified or backed up.
+
+| Observed event | Paperclip status | Meaning |
+| --- | --- | --- |
+| User submits a prompt | In progress | A new turn was submitted; not proof of subsequent model activity |
+| Assistant emits a response | In progress | Visible response excerpt saved; await the turn-end event |
+| Turn completes | In review | This turn ended; a human still decides whether the task is complete |
+| Turn aborts | Todo | Interrupted, awaiting continuation |
+| Turn errors | Blocked | Cursor reported an error |
+
+Historical bootstrap is explicitly marked historical, including any old empty
+project/task lists. The bridge never infers a completion percentage or marks
+Done. Closed tasks are not reopened, and changes to the task's project/company,
+source marker or assignment to an execution agent stop synchronization. There
+is no crash watchdog: inspect the latest event timestamp rather than treating
+In progress as a live heartbeat.
+
+Task creation checks its exact source marker. Updates use stable comment request
+IDs; a server-committed response lost in transit is reconciled before retry.
+An unchanged replay leaves the task, comments and local state untouched. A
+small bounded outbox retains failed events for the next event or manual flush:
+
+```sh
+python3 -B ops/pm/cursor-progress.py flush
+python3 -B -m unittest discover -s ops/pm -p test_cursor_progress.py -v
+```
+
+Hooks emit valid nonblocking JSON and never inject an automatic follow-up. On
+failure the Hooks output reports a safe error classification, without raw
+payloads or credentials. A pending outbox alone does not schedule retries;
+there is no background daemon. The pilot caps input/state files at 1 MiB,
+pending events at 32, private data at 10 MiB, and sampled self peak RSS at
+128 MiB, and preserves 50 GiB free on the SSD. The private binding/outbox stay
+until this pilot is accepted or removed. No new dependencies are installed.
+
+To disable the bridge, remove only the three command entries referring to
+`ops/pm/cursor-progress.py` from `~/.cursor/hooks.json`, preserving any other
+hooks. Keep the source and task for audit or remove this pilot's small private
+binding/outbox after deciding how to retain GON-2. No Paperclip service restart,
+Cursor chat migration or OAuth revocation is required.
+
+Official event schemas: https://cursor.com/docs/hooks
+
 ## Monitoring and resource budget
 
 PM's existing Healthchecks KeepAlive probe should include this LaunchAgent and

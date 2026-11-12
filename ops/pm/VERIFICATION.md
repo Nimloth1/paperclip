@@ -150,3 +150,66 @@ a recognized config alone are not evidence of authorized task access.
 No upstream application source was changed, so the upstream full test suite and
 source build were not run. This evidence qualifies the pinned packaged runtime
 and host deployment only.
+
+## Existing Cursor Desktop conversation progress pilot
+
+The selected existing conversation is **Paperclip 列项目任务**. Its small JSONL
+transcript contains the user's previously confirmed native MCP acceptance turn
+and a `turn_ended: success` record. A point lookup of its metadata key in Cursor's
+read-only SQLite connection confirmed the existing title and completed status;
+there was no database-wide content scan, copy or mutation. The existing 4.4 GB
+database was not exported. Only this conversation is allowlisted.
+
+- Created the human-assigned task GON-2 under the existing Paperclip project.
+  Its source marker and original request link it to that conversation; the
+  first comment is explicitly historical, not a current project-count report.
+- The first task-creation request timed out after two seconds, but the server
+  had committed it. A read-only reconciliation found the source-marked GON-2;
+  bootstrap then reused it rather than creating another task. First-time setup
+  now allows a 20-second timeout, while normal Hooks use short calls and a small
+  retry outbox. No automatic blind POST retry was introduced.
+- Replayed historical bootstrap twice. Both returned `unchanged: true`;
+  GON-2 remained In review with one comment and its original
+  `updatedAt=2026-11-12T09:48:05.100Z`. The private state modification time was
+  unchanged. The timed no-op run took 0.07 seconds, peak RSS 31,817,728 bytes
+  (30.34 MiB), and reported zero block output operations.
+- Installed three native user Hooks. Cursor 3.29.9's existing Hooks channel
+  logged a configuration reload and `Loaded 3 user hook(s) for steps:
+  beforeSubmitPrompt, afterAgentResponse, stop` at 09:48:07 UTC. The private
+  `~/.cursor/hooks.json` was previously absent and is mode 600. Existing
+  Claude-compatible or project hooks were not edited.
+- Ten focused standard-library tests passed: unrelated conversations leave no
+  state and read no credentials; submitted/replied/stopped turns map to the
+  intended states; replay creates no duplicate or state rewrite; offline events
+  recover in order; a committed-but-lost response does not duplicate comments;
+  late responses cannot regress a completed turn; closed/reassigned tasks are
+  protected; abortion and error do not claim completion; basic secret redaction
+  and length bounds work; hook failures return valid allow JSON without logging
+  prompt contents; a full outbox is not overwritten.
+- A desktop Accessibility check found the selected chat's known native MCP
+  response. The attempted read-only acceptance prompt stopped **before typing
+  or sending** because the input had an existing draft. The draft was left
+  untouched, and the user was asked to send one harmless turn in that existing
+  chat. **Real Cursor-generated progress events remain unqualified until that
+  turn occurs.** Hook discovery, historical bootstrap and fixture tests are not
+  reported as live event acceptance.
+- Cursor's OAuth scope was not expanded. The write bridge reads the existing
+  approved administrator CLI credential, so its single-task scope is a local
+  code restriction, not a new server-side least-privilege token. No credential
+  was copied into Hooks, source or Git. The only execution agent, 丞相, remains
+  paused and GON-2 has no agent assignee.
+- A 390.2-second host observation covered bootstrap, no-op checks and a database
+  checkpoint. Persistent Paperclip Node and observed PostgreSQL descendants
+  wrote 1,257,472 bytes (1.20 MiB). Short-lived bridge children are not included
+  in those endpoint snapshots; the separate timed no-op check above covers the
+  bridge's no-change behavior. Private pilot files were about 20 KiB before
+  the final snapshots. This bootstrap window is not a daily-write forecast.
+  Whole-host volume writes were SSD 7,319.02 MiB, Data 164.55 MiB, VM zero.
+  Unrelated pre-existing Python processes wrote approximately 1,559 MiB and
+  sftp 193 MiB; a substantial remaining physical-volume gap is unattributed
+  (endpoint counters miss exited/root writers and mmap attribution). These
+  host totals are not assigned to Paperclip or claimed fully reconciled.
+
+No upstream application/runtime source, execution adapters, scheduled tasks or
+services were changed. Full source build and upstream application suites were
+not run for this standalone PM integration script.
