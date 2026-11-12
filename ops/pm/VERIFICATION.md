@@ -109,9 +109,43 @@ list; `paperclip_search_tasks` with limit 100 and offset 0 returned an empty lis
 This user-confirmed native read, together with the inspected native discovery
 logs and direct proxy checks above, qualifies the Cursor read-only integration.
 
-Existing projects/tasks have not been imported. Claude/Codex authorization and
-native checks remain deferred. Initialization and a recognized config alone are
-not evidence of authorized task access.
+Claude/Codex authorization and native checks remain deferred. Initialization and
+a recognized config alone are not evidence of authorized task access.
+
+## Project import and mobile pilot
+
+- Imported 109 projects from local PM Git repositories and Codex-registered
+  directories; nine duplicate paths were combined. No other host was scanned.
+- Verified zero imported lead-agent assignments, execution workspaces or
+  execution policies. Actual progress is unverified and initially Backlog.
+- Created GON-1 as a human-assigned Backlog task under the Paperclip project,
+  with no agent assignee. The existing agent remains paused.
+- Rerunning `--apply --demo-task` created zero projects and zero tasks, skipped
+  all 109 projects and reused GON-1. All project/task update timestamps and both
+  private plan/result manifest modification times were unchanged.
+- The importer sampled self peak RSS at 33.5 MiB for initial import and 33.3 MiB
+  on the no-op rerun, within the 128 MiB budget. SSD free space was 466.8 GiB
+  before import, above the enforced 50 GiB reserve. Private import metadata and
+  the mobile screenshot total approximately 154 KiB before write snapshots.
+- Cursor's unchanged read-only proxy sees all 109 imported projects and GON-1.
+- Headless Chrome at 390×844 loaded the production HTTPS sign-in page with
+  status 200, no page errors and scroll width equal to viewport width (390).
+  Browser-side manifest fetch returned 200, name Paperclip, display `browser`.
+  An initial manifest check through Playwright's separate Node request client
+  failed because it did not inherit Chromium's process-only DNS rule; this was
+  not evidence of a phone/service outage. The browser-side request passed.
+- Actual phone sign-in/task creation and standalone PWA installation remain
+  unqualified. The deployed manifest differs from the source checkout; the
+  packaged runtime was not patched to change installation behavior.
+- A 329.5-second host write observation covered the import, no-op rerun,
+  read checks and a PostgreSQL checkpoint cycle. The persistent Paperclip Node
+  and observed PostgreSQL descendants wrote 2,768,896 bytes (2.64 MiB), including
+  the one-time import. This is not an idle-rate or daily-write projection.
+  Whole-host volume deltas were much larger (SSD 483.39 MiB, Data 142.57 MiB,
+  VM 353.19 MiB) with concurrent applications and swap; these are not attributed
+  to Paperclip. Short-lived importer/browser children may exit between the
+  snapshots, so this is not complete physical-write attribution. Only the
+  task's small private snapshot pair and summary were retained.
 
 No upstream application source was changed, so the upstream full test suite and
 source build were not run. This evidence qualifies the pinned packaged runtime

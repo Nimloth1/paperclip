@@ -134,6 +134,59 @@ Official references:
 - https://docs.paperclip.ing/reference/cli/mcp/
 - https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp
 
+## Project inventory and mobile pilot
+
+The initial import created 109 project records in Gondolin and merged nine
+duplicate paths. Sources were local Git repositories under both PM project
+roots plus existing local Codex project registrations. This is a PM inventory,
+not an inventory of PW, remote hosts or every chat application. Same GitHub
+repositories are combined; SSD and explicitly registered paths take precedence
+over older clones/worktrees. GitHub URLs are restricted to plain owner/repository
+locations; user information and URL parameters are not copied.
+
+Projects contain names, source paths, sanitized repository links and import
+markers. Their initial status is Backlog, with actual progress explicitly marked
+unverified. The import creates no execution workspaces, lead-agent assignments,
+environment variables or execution commands, and does not read source bodies or
+chat content. The existing paused agent was left paused.
+
+`import-projects.py` defaults to preview. It consumes a private snapshot of local
+Codex project registrations at `.paperclip/import/codex-projects.json`:
+
+```sh
+python3 ops/pm/import-projects.py
+python3 ops/pm/import-projects.py --apply --demo-task
+```
+
+The official administrator CLI credential authorizes the loopback REST requests;
+Cursor's read-only credential is not expanded. Source markers and project
+idempotency keys prevent duplicate records. An existing same-name project
+without an import marker stops the batch for review. The bounded scanner stops
+at Git roots, scans at most four directory levels and 2,000 directories, and
+accepts at most 250 projects. Memory, free SSD space and private-manifest guards
+run between operations. No full-directory or database backup is made. Keep the
+small private plan/result manifests for provenance and a possible targeted rollback.
+
+GON-1, **手机验收：查看项目目录并创建一条待办**, belongs to the Paperclip
+project and is assigned to the human user with status Backlog and no agent.
+It is a manual acceptance task and starts no execution. A rerun created no
+projects/tasks, preserved all entity update timestamps and did not rewrite the
+plan/result manifests.
+
+Mobile users connect Tailscale to the same tailnet, then sign in at
+`https://pm-haofengmac-mini.taile41bfa.ts.net:8822/`. The current production login
+page passed a 390×844 browser check without horizontal overflow or page errors.
+The deployed manifest says `display: browser`; standalone PWA installation is
+not qualified, despite the checkout's newer manifest saying `standalone`.
+Use the mobile browser for this pilot; a home-screen shortcut is optional.
+An actual phone login and task-create interaction still require user acceptance.
+
+To create a manual task, choose **New Task**, select its project, describe the
+request and acceptance criteria, choose yourself (or no agent) as assignee,
+and save it in **Backlog**. Creating a task does not itself start an existing
+Cursor Desktop conversation. Autonomous execution requires a separately
+configured, active execution agent and its normal budget/approval controls.
+
 ## Monitoring and resource budget
 
 PM's existing Healthchecks KeepAlive probe should include this LaunchAgent and
