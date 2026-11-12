@@ -58,17 +58,46 @@ not yet provide recovery backups for research data.
 
 ## Desktop connections
 
-After first-admin registration, create the desired organization and enable
+The first administrator has registered and claimed the instance. Create the desired organization and enable
 Settings → Experimental → Assistant connections (MCP). Use Connectors →
 Assistant Connection (MCP) to generate client-specific setup instructions.
 
-The MCP resource is `/mcp/paperclip`. Connect Codex Desktop and Cursor with
-Streamable HTTP and browser authorization. Claude Desktop's remote connectors
-originate in Anthropic's cloud, so they cannot reach a private Tailscale address;
-use the documented local stdio proxy for a private deployment. Reading setup
-instructions alone does not install an MCP connection.
+The three desktop configurations have a `paperclip` stdio entry pointing to
+`/bin/bash /Volumes/ssd/projects/t/paperclip/ops/pm/mcp.sh`. Existing entries and
+preferences were preserved. The wrapper runs the published CLI proxy with
+`PAPERCLIP_HOME` set to this deployment's private state directory, so the three
+clients share one explicitly approved MCP connection. Revoking that shared
+connection affects all three clients.
 
-Start verification with `paperclip_connection` and project/task listing. A new
+`tailnet-dns.mjs` pins only the Paperclip hostname to this Mac's Tailscale IPv4
+address inside that CLI process, preserving hostname/certificate validation.
+It does not change system DNS, hosts files, browser settings or other hosts.
+Set `PAPERCLIP_TAILNET_ADDRESS` if the host's tailnet address deliberately changes.
+The authenticated MCP resource remains the canonical HTTPS origin plus
+`/mcp/paperclip`. Reading setup instructions or passing MCP initialization does
+not establish an authorized connection.
+
+Authorize the shared proxy after enabling the feature:
+
+```sh
+ops/pm/mcp.sh mcp login --device --url https://pm-haofengmac-mini.taile41bfa.ts.net:8822/mcp/paperclip
+```
+
+Approve the printed device code in a signed-in Paperclip browser. An existing
+Mac browser's proxy/DNS path may still need a per-browser resolution override;
+the CLI's pin does not modify browser behavior. The official CLI stores MCP
+credentials privately under `.paperclip/mcp/` and serializes refresh across
+client processes. No model-provider API key is used by this bridge.
+
+Small private backups of the two pre-existing client configuration files live
+under `.paperclip/client-config-backups/` (approximately 64 KiB total), solely for
+rollback. Keep them until all three native clients have reloaded and passed a
+read-only lookup; then remove them. They contain private configuration and must
+not be copied into Git or reports. Cursor's previously absent global file was
+created; the backup manifest records this distinction.
+
+After OAuth approval and client reload, start verification with
+`paperclip_connection` and project/task listing. A new
 MCP connection neither imports all desktop chat history nor starts monitoring
 or agent execution. Assistant connections are an upstream experimental feature.
 

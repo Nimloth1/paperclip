@@ -52,12 +52,24 @@
 These are idle-pilot measurements, not a forecast for active agent workloads,
 attachments, or future database growth. No paid model task was started.
 
-## Pending user setup
+## Desktop setup follow-up
 
-The user must create/sign in to their own account and claim first-instance
-admin. Then create an organization, enable Assistant connections (MCP), and
-perform client-specific OAuth/stdio setup for Claude Desktop, Codex Desktop,
-and Cursor. None of those desktop configurations has been changed yet.
+The user completed registration and first-instance-admin claim. Health now
+reports `bootstrapStatus=ready`.
+
+- Added a Paperclip-only CLI DNS pin; real HTTPS health returned 200 with normal
+  TLS verification. An unrelated `localhost` DNS lookup retained its ordinary
+  behavior.
+- The shared stdio proxy returned a valid MCP initialize response.
+- Added `paperclip` to Claude Desktop, Codex Desktop, and Cursor configuration.
+  Parsed comparisons proved existing settings/servers were preserved. Config
+  files are mode 600; small rollback backups stay private and ignored.
+- `codex mcp get paperclip --json` confirmed the enabled stdio command and args.
+
+Still pending: administrator CLI consent, confirming or creating the target
+organization, enabling Assistant connections, completing shared MCP OAuth, and
+read-only calls from the three reloaded native clients. Initialization and a
+recognized config are not evidence of authorized task access.
 
 No upstream application source was changed, so the upstream full test suite and
 source build were not run. This evidence qualifies the pinned packaged runtime
