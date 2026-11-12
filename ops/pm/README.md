@@ -73,6 +73,13 @@ default `.paperclip/` used by the other two clients. Claude and Codex currently
 have no approved MCP credentials; authorizing Cursor does not authorize them.
 The administrator CLI credential is separate from all MCP connection grants.
 
+Cursor's args explicitly include `mcp proxy --url` and the canonical MCP URL
+after the wrapper path. This recreated its native connection after it had cached
+an empty tool catalog from the pre-authorization attempt. Cursor's native logs
+then confirmed `tools=37, status=connected` and published the tool definitions
+to its active chat workspaces. A terminal proxy call alone does not qualify a
+native chat integration.
+
 `tailnet-dns.mjs` pins only the Paperclip hostname to this Mac's Tailscale IPv4
 address inside that CLI process, preserving hostname/certificate validation.
 It does not change system DNS, hosts files, browser settings or other hosts.

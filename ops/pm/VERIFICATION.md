@@ -90,9 +90,19 @@ The catalog still advertises 37 tools for read-only connections. A configuration
 call against a nonexistent project was denied for missing `paperclip:configure`
 before any mutation. No project, task, agent or model execution was started.
 
-Cursor's native log confirms the configured stdio process was started, but its
-first catalog lookup preceded authorization and failed. Still pending: refreshing
-the native connection and a real read from a Cursor chat.
+The user's first Cursor report confirmed reads through the same official proxy,
+but explicitly said the native `user-paperclip` namespace was unavailable. Native
+logs still showed zero tools, including after toggling the server. This was not
+counted as native-call acceptance.
+
+Cursor's launch args now explicitly include `mcp proxy --url` and the canonical
+MCP URL. This created a fresh native connection. At 17:40:50 local time, native
+logs changed from zero tools to `tools=37, status=connected`; the MCP filesystem
+writer published all 37 definitions to the active chat workspaces. No client
+restart, new consent, application patch or additional permission was used.
+
+Still pending: a real native tool call from a Cursor chat, without terminal or
+script substitution. The native connection and tool discovery are now verified.
 Claude/Codex authorization and native checks remain deferred. Initialization and
 a recognized config are not evidence of authorized task access.
 
