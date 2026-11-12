@@ -993,7 +993,9 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const sequence: string[] = [];
     const providerLeaseId = randomUUID();
     const taskLease = { environmentId: environment.id, driverKey: "tasks", providerLeaseId };
-    input.services.workspaceWorkers = { getWorker: () => ({ supportedMethods: ["workspaceOperation", "environmentTask"] }), call: async (_: string, method: string, params: any) => {
+    input.services.workspaceWorkers = { getWorker: () => ({ supportedMethods: [
+      "workspaceOperation", "environmentTask", ...(portable ? ["workspacePrepare"] : []),
+    ] }), call: async (_: string, method: string, params: any) => {
       if (method === "environmentTask") {
         expect(params.taskId).toBe(providerLeaseId);
         expect(params.operation.kind).toBe("describe");
@@ -1004,6 +1006,10 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       if (params.operation.kind === "finalize") {
         sequence.push("finalize");
         return { kind: "finalized", headSha: "a".repeat(40), branchName: "test-WSP-1" };
+      }
+      if (portable) {
+        expect(method).toBe("workspacePrepare");
+        expect(params.phase).toBe("submit");
       }
       sequence.push("prepare");
       return { kind: "prepared", binding: { pluginId: plugin.id, projectId: issue.projectId, executionWorkspaceId: params.executionWorkspaceId,
