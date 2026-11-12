@@ -105,6 +105,7 @@ const commandTypes = new Set([
   "interaction.receipt",
   "semantic_tool.result",
   "external_provider.operation",
+  "runner.attachment.download",
   "session.snapshot",
   "session.goal.get",
   "session.goal.set",
@@ -646,6 +647,8 @@ export interface RunnerProcessLaunchSpec {
   args: readonly string[];
   cwd: string;
   environment: NodeJS.ProcessEnv;
+  /** True while the launched Runner holds an authenticated connection to its control plane. */
+  isRunnerConnected?: () => boolean;
 }
 
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
@@ -2467,6 +2470,10 @@ export class DurablePrpControlPlane {
     for (const connection of connections) connection.close();
   }
 
+  activeRunnerProtocolVersion(): number | null {
+    return this.#eventOwner?.lease?.protocolVersion ?? null;
+  }
+
   activeRunnerConnectionCount(): number {
     return [...this.#connections].filter(
       (connection) => connection.secureChannel !== null,
@@ -2915,9 +2922,11 @@ export class DurablePrpControlPlane {
     }
     const controllerSeq = this.#store.state.commands.length + 1;
     const command: DurableRecoveryCoreCommand = {
-      schema: type === "external_provider.operation" ? "paperclip.prp.command.v3" : type.startsWith("session.goal.")
-        ? "paperclip.prp.command.v2"
-        : "paperclip.prp.command.v1",
+      schema: type === "external_provider.operation" || type === "runner.attachment.download"
+        ? "paperclip.prp.command.v3"
+        : type.startsWith("session.goal.")
+          ? "paperclip.prp.command.v2"
+          : "paperclip.prp.command.v1",
       commandId:
         commandId ?? `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
       controllerSeq,
@@ -4732,6 +4741,7 @@ export function spawnRunner(options: {
   };
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
+  isRunnerConnected?: () => boolean;
   diagnosticsDirectory?: string;
 }): RunnerProcessHandle {
   for (const value of [options.maxRuntimeMs, options.maxLifetimeMs]) {
@@ -4881,6 +4891,7 @@ export function spawnRunner(options: {
   if (options.processLauncher !== undefined) {
     return withRestart(
       options.processLauncher({ command, args, cwd: packageRoot, environment,
+        ...(options.isRunnerConnected ? { isRunnerConnected: options.isRunnerConnected } : {}),
         nativeRunner: {
           identity: options.identity, ticket: options.ticket, connection, stateDirectory: options.stateDirectory,
           runnerVersion: options.runnerVersion, runnerDigest: options.runnerDigest,

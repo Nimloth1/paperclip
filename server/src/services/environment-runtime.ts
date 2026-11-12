@@ -3,6 +3,7 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller
 import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
+import { NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, readReplaceBeforeReuseMarker } from "./native-runtime/predecessor-retirement.js";
 import {
   REUSABLE_SANDBOX_RESUME_BUDGET_MS,
   retireReplacedReusableSandboxLease,
@@ -22,7 +23,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { historicalProviderCredentials } from "./historical-provider-credentials.js";
 import { ownedWorkspaceRecoveryLease, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
+import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, SANDBOX_STOP_AND_RETAIN_KEY, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -1099,6 +1100,37 @@ function reusableSandboxLeaseScopeMatches(input: {
   });
 }
 
+const SETTLING_REUSABLE_LEASE_WAIT_MS = 20_000;
+const SETTLING_REUSABLE_LEASE_RECENT_MS = 2 * 60_000;
+
+async function waitForSettlingReusableLease(db: Db, input: {
+  companyId: string; environmentId: string; executionWorkspaceId: string | null; issueId: string | null;
+  agentId: string; heartbeatRunId: string;
+}) {
+  const deadline = Date.now() + SETTLING_REUSABLE_LEASE_WAIT_MS;
+  for (;;) {
+    const [settling] = await db.select({ id: environmentLeases.id }).from(environmentLeases)
+      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, environmentLeases.heartbeatRunId),
+        eq(heartbeatRuns.companyId, environmentLeases.companyId)))
+      .where(and(
+        eq(environmentLeases.companyId, input.companyId),
+        eq(environmentLeases.environmentId, input.environmentId),
+        eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+        or(eq(environmentLeases.status, "active"), and(eq(environmentLeases.status, "pending_cleanup"),
+          sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${SANDBOX_STOP_AND_RETAIN_KEY}`)),
+        ne(environmentLeases.heartbeatRunId, input.heartbeatRunId),
+        input.executionWorkspaceId
+          ? eq(environmentLeases.executionWorkspaceId, input.executionWorkspaceId)
+          : and(sql`${environmentLeases.executionWorkspaceId} is null`, eq(environmentLeases.issueId, input.issueId!)),
+        sql`${environmentLeases.metadata}->>'agentId' = ${input.agentId}`,
+        inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out"]),
+        sql`${heartbeatRuns.finishedAt} > now() - make_interval(secs => ${SETTLING_REUSABLE_LEASE_RECENT_MS / 1000})`,
+      )).limit(1);
+    if (!settling || Date.now() >= deadline) return;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+}
+
 function reusableLeaseCanBeResumed(input: {
   lease: Pick<EnvironmentLease, "status" | "heartbeatRunId">;
   heartbeatRunId: string | null;
@@ -1747,6 +1779,12 @@ function createSandboxEnvironmentDriver(
         // We also filter out leases whose policy is not reuse_by_environment
         // and whose status is not reusable so non-reusable, cleanup-pending,
         // or terminal rows cannot be matched.
+        if (supportsReusableLeases && parsed.config.reuseLease && input.heartbeatRunId !== null
+          && (input.executionWorkspaceId !== null || input.issueId !== null) && input.agentId !== null) {
+          await waitForSettlingReusableLease(db, { companyId: input.companyId, environmentId: input.environment.id,
+            executionWorkspaceId: input.executionWorkspaceId, issueId: input.issueId, agentId: input.agentId,
+            heartbeatRunId: input.heartbeatRunId });
+        }
         const reusableCandidateLeases =
           supportsReusableLeases &&
           parsed.config.reuseLease &&
@@ -1806,6 +1844,7 @@ function createSandboxEnvironmentDriver(
           : null;
 
         let providerLease: PluginEnvironmentLease | null = null;
+        let replacingUnretiredOwner = false;
         let replacementReason:
           | "not_found"
           | "expired"
@@ -1831,7 +1870,17 @@ function createSandboxEnvironmentDriver(
               providerLeaseId: reusableLease.providerLeaseId,
             });
           }
-          try {
+          // A run that could not retire its predecessor's Runner on this
+          // sandbox asked for a fresh one. Replace it under the same safety
+          // rule as a failed resume; otherwise resume it as before.
+          replacingUnretiredOwner = readReplaceBeforeReuseMarker(reusableLease.metadata) !== null
+            && await reusableSandboxReplacementIsSafe({
+              db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+              executionWorkspaceId: input.executionWorkspaceId, adapterType: input.adapterType,
+              cause: new Error(NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE),
+            });
+          if (replacingUnretiredOwner) replacementReason = "resume_failed";
+          else try {
             // One run spends a bounded budget resuming, retries included; the
             // provider's own start deadline (five minutes on Daytona) is not it.
             const configuredResumeTimeoutMs = Math.min(
@@ -2023,6 +2072,7 @@ function createSandboxEnvironmentDriver(
               ? {
                   outcome: "replacement",
                   reason: replacementReason ?? "resume_failed",
+                  ...(replacingUnretiredOwner ? { cause: NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE } : {}),
                 }
               : {
                   outcome: "created",
@@ -2106,6 +2156,12 @@ function createSandboxEnvironmentDriver(
               providerConfig: providerConfigForLease,
             })
           : null;
+      if (supportsReusableLeases && parsed.config.reuseLease && input.heartbeatRunId !== null
+        && (input.executionWorkspaceId !== null || input.issueId !== null) && input.agentId !== null) {
+        await waitForSettlingReusableLease(db, { companyId: input.companyId, environmentId: input.environment.id,
+          executionWorkspaceId: input.executionWorkspaceId, issueId: input.issueId, agentId: input.agentId,
+          heartbeatRunId: input.heartbeatRunId });
+      }
       const reusableCandidateLeases =
         supportsReusableLeases &&
         parsed.config.reuseLease &&
@@ -3850,10 +3906,11 @@ export function environmentRuntimeService(
       )`,
     )).returning(), { companyId: input.leaseRow.companyId, runId: input.leaseRow.heartbeatRunId ?? undefined });
     if (!claimed) return null;
-    crashPoint("environment.teardown.after_claim_before_destroy");
     const lease = toEnvironmentLeaseSnapshot(claimed);
     const renewal = renewCleanupClaim(lease.id, attemptId, "scoped cleanup ownership renewal failed");
     try {
+      // Kill mode leaves the claim in flight; fail mode (restart chaos only) is a provider destroy that did not finish.
+      crashPoint("environment.teardown.after_claim_before_destroy", { fail: () => new Error("sandbox teardown incomplete: provider destroy did not finish") });
       const driver = getDriver(getLeaseDriverKey(lease, input.environment));
       if (!driver?.destroyRunLease) return lease;
       const released = await driver.destroyRunLease({
