@@ -259,6 +259,27 @@ Cursor chat migration or OAuth revocation is required.
 
 Official event schemas: https://cursor.com/docs/hooks
 
+## Claude Desktop progress bridge (trial, not yet connected)
+
+`claude-progress.py` is written and unit-tested against a fake API only; it is
+**not installed** and has no credential yet. Design: Claude Code's official
+`UserPromptSubmit`, `Stop` and `StopFailure` hooks call it; it maps `cwd` to a
+listed project (`.claude/worktrees/...` folds into the main repo; unlisted
+folders are ignored before any file, credential or state is read) and appends
+one comment per event to that project's single long-lived "进展" task, creating
+it on first activity. Prompts keep ~200 characters, replies ~800, redacted with
+the same patterns as the Cursor pilot. No model summarises anything. Status
+mirrors the latest event across all conversations of the project; done or
+cancelled tasks are never reopened.
+
+It reads only `.paperclip/claude-progress/auth.json` (a dedicated
+`paperclip:write` credential, no `configure`) and never falls back to the
+administrator credential. Least privilege is script-enforced, as no
+comment-only scope exists on the server. Conversation title is not in the hook
+payload, so comments label conversations by session-ID prefix.
+
+Tests: `python3 -B -m unittest discover -s ops/pm -p test_claude_progress.py -v`
+
 ## Monitoring and resource budget
 
 PM's existing Healthchecks KeepAlive probe should include this LaunchAgent and
