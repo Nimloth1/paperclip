@@ -33,17 +33,6 @@ EVENTS = {
 PROMPT_CHARS, REPLY_CHARS = 200, 800
 
 
-class ClaudeAPI(base.Paperclip):
-    """只读取本脚本专用的写权限凭据；缺失时直接失败，绝不回退到管理员凭据。"""
-
-    def __init__(self, timeout=2):
-        auth = base.read_json(PRIVATE / 'auth.json')
-        self.token = auth['token']
-        self.timeout = timeout
-        self.opener = base.urllib.request.build_opener(
-            base.urllib.request.ProxyHandler({}), base.NoRedirect())
-
-
 def marker(project):
     return '<!-- claude-progress:' + project['projectId'] + ' -->'
 
@@ -160,7 +149,7 @@ def process(payload, config_path=PRIVATE / 'config.json', api=None):
         if not state['pending']:
             return {'unchanged': True}
         try:
-            result = sync(config, state, api or ClaudeAPI())
+            result = sync(config, state, api or base.Paperclip())
         finally:
             base.write_json(state_path, state)
             base.write_json(config_path, config)  # 保存首次建好的 issueId
